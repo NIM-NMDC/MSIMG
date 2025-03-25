@@ -139,6 +139,6 @@ if __name__ == '__main__':
             images_dir = os.path.join(ms_files_dir, 'images')
             os.makedirs(images_dir, exist_ok=True)
             image_path = os.path.join(images_dir, os.path.splitext(os.path.basename(ms_file_path))[0] + '.png')
-            rasterize_ms_to_image(ms_file_path, image_path=image_path, image_size=(500, 500))
+            rasterize_ms_to_image(ms_file_path=ms_file_path, image_path=image_path, image_size=image_size)
     else:
         raise FileNotFoundError(f"Directory {ms_files_dir} not found.")
