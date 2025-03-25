@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 
+from file_utils import get_files_path
+
 
 def rasterize_ms_to_image(ms_file_path, image_path=None, image_size=(500, 500), start_mz=None, end_mz=None, start_rt=None, end_rt=None):
     """
@@ -111,18 +113,32 @@ def rasterize_ms_to_image(ms_file_path, image_path=None, image_size=(500, 500), 
 
 if __name__ == '__main__':
 
-    ms_files_dir = r'E:\msdata\ST003161_Rawfiles\SOURCE_Israel_Stool_2022_mzml'
-    ms_files_path = []
-    if os.path.exists(ms_files_dir):
-        for root, dirs, files in os.walk(ms_files_dir):
-            for file in files:
-                if file.endswith('.mzML'):
-                    file_path = os.path.join(root, file)
-                    ms_files_path.append(file_path)
+    def get_int_input(prompt, default):
+        while True:
+            user_input = input(prompt)
+            if user_input.strip() == '':
+                return default
+            try:
+                value = int(user_input)
+                return value
+            except ValueError:
+                print('Invalid input. Please enter an integer value.')
 
-    for ms_file_path in ms_files_path:
-        images_dir = os.path.join(ms_files_dir, 'images')
-        os.makedirs(images_dir, exist_ok=True)
-        image_path = os.path.join(images_dir, os.path.splitext(os.path.basename(ms_file_path))[0] + '.png')
-        # image_path = os.path.splitext(ms_file_path)[0] + '.png'
-        rasterize_ms_to_image(ms_file_path, image_path=image_path, image_size=(500, 500))
+    ms_files_dir = input('Please input the directory of mass spectrometry files: ')
+    suffix = input('Please input the file suffix (e.g., .mzML, .raw): ')
+    if not suffix.startswith('.'):
+        suffix = '.' + suffix
+    image_size_width = get_int_input('Please input the width of the image (default 500): ', 500)
+    image_size_height = get_int_input('Please input the height of the image (default 500): ', 500)
+    image_size = (image_size_width, image_size_height)
+
+    if os.path.exists(ms_files_dir):
+        ms_files_path = get_files_path(base_dir=ms_files_dir, suffix=suffix)
+
+        for ms_file_path in ms_files_path:
+            images_dir = os.path.join(ms_files_dir, 'images')
+            os.makedirs(images_dir, exist_ok=True)
+            image_path = os.path.join(images_dir, os.path.splitext(os.path.basename(ms_file_path))[0] + '.png')
+            rasterize_ms_to_image(ms_file_path, image_path=image_path, image_size=(500, 500))
+    else:
+        raise FileNotFoundError(f"Directory {ms_files_dir} not found.")
