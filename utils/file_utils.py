@@ -2,22 +2,22 @@ import os
 import shutil
 
 
-def get_files_path(base_dir, suffix):
-    files_path = []
+def get_file_paths(base_dir, suffix):
+    file_paths = []
 
     if os.path.exists(base_dir):
         for root, dirs, files in os.walk(base_dir):
             for file in files:
                 if file.endswith(suffix):
                     file_path = os.path.join(root, file)
-                    files_path.append(file_path)
-        return files_path
+                    file_paths.append(file_path)
+        return file_paths
     else:
         raise FileNotFoundError(f"Directory {base_dir} not found.")
 
 
 def move_files(base_dir, suffix, target_labels, get_label_function=None):
-    files_path = get_files_path(base_dir=base_dir, suffix=suffix)
+    files_path = get_file_paths(base_dir=base_dir, suffix=suffix)
 
     print(f'Found {len(files_path)} {suffix} files.')
 
