@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 
-from file_utils import get_files_path
+from file_utils import get_file_paths
 
 
-def rasterize_ms_to_image(ms_file_path, image_path=None, image_size=(500, 500), start_mz=None, end_mz=None, start_rt=None, end_rt=None):
+def rasterize_ms_to_image(ms_file_path, image_path=None, image_size=(500, 500), start_mz=None, end_mz=None, start_rt=None, end_rt=None, show_image=True):
     """
     Rasterize mass spectrometry data (MS1) to an image representation.
 
@@ -107,11 +107,21 @@ def rasterize_ms_to_image(ms_file_path, image_path=None, image_size=(500, 500), 
     if image_path:
         # Save image with no extra padding.
         plt.savefig(image_path, bbox_inches='tight', pad_inches=0, transparent=True)
-    # plt.show()
+    if show_image:
+        plt.show()
     plt.close()
 
 
 if __name__ == '__main__':
+
+    # Test
+    ms_file_path = r'E:\msdata\ST000923\HMP2_C8-pos\C8p_rawData\CD\0024_XAV_iHMP2_LIP_SM-6CAJC_CD.mzML'
+    rasterize_ms_to_image(
+        ms_file_path=ms_file_path,
+        image_path=None,
+        image_size=(500, 500),
+        show_image=True
+    )
 
     def get_int_input(prompt, default):
         while True:
@@ -133,9 +143,9 @@ if __name__ == '__main__':
     image_size = (image_size_width, image_size_height)
 
     if os.path.exists(ms_files_dir):
-        ms_files_path = get_files_path(base_dir=ms_files_dir, suffix=suffix)
+        ms_file_paths = get_file_paths(base_dir=ms_files_dir, suffix=suffix)
 
-        for ms_file_path in ms_files_path:
+        for ms_file_path in ms_file_paths:
             images_dir = os.path.join(ms_files_dir, 'images')
             os.makedirs(images_dir, exist_ok=True)
             image_path = os.path.join(images_dir, os.path.splitext(os.path.basename(ms_file_path))[0] + '.png')
