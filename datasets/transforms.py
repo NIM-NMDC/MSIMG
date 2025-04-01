@@ -1,12 +1,15 @@
 import torch
+import torch.nn as nn
 from torchvision import transforms as T
 from torchvision.transforms.functional import erase as f_erase
 
 import random
 
 
-class MinMaxNormalize(torch.nn.Module):
-
+class MinMaxNormalize(nn.Module):
+    """
+    Min-Max normalization for the input tensor.
+    """
     def forward(self, img):
         min_val = torch.min(img)
         max_val = torch.max(img)
@@ -17,17 +20,34 @@ class MinMaxNormalize(torch.nn.Module):
         return img
 
 
-class RandomNoise(torch.nn.Module):
+class ZeroMeanNormalize(nn.Module):
     """
-    Add random noise to the input tensor.
+    Zero mean normalization for the input tensor. [0, 1] -> [-1, 1]
     """
-    def __init__(self, noise_std=0.05):
+    def forward(self, img):
+        return img * 2 - 1
+
+
+class NoiseInjection(nn.Module):
+    """
+    Mass spectrometry specific noise injection.
+    """
+    def __init__(self, noise_level=0.05, spike_prob=0.02):
         super().__init__()
-        self.noise_std = noise_std
+        self.noise_level = noise_level
+        self.spike_prob = spike_prob
 
     def forward(self, img):
-        noise = torch.randn_like(img) * self.noise_std
-        return img + noise
+        noise = torch.randn_like(img) * self.noise_level
+
+        # Spike noise (simulate mass spectrometry artifact)
+        if random.random() < self.spike_prob:
+            h, w = img.shape[-2:]
+            x = random.randint(0, w - 1)
+            y = random.randint(0, h - 1)
+            noise[y:y + 3, x:x + 3] += 0.5
+
+        return torch.clamp(img + noise, 0., 1.)
 
 
 class RandomErase(torch.nn.Module):
@@ -63,29 +83,74 @@ class RandomErase(torch.nn.Module):
         return img
 
 
-def ms_img_transform_pipeline(min_max_norm=True, noise_std=0.0, erase_p=0.0, resize=None):
+def build_base_transform(config):
     """
-    Create a transformation pipeline for MS 2D images.
-
-    :param min_max_norm: bool, Whether to perform min-max normalization.
-    :param noise_std: float, Standard deviation of the random noise.
-    :param erase_p: float, Probability of random erasing.
-    :param resize: Optional tuple=(H, W), Whether to resize the image to the specified size.
+    Build the base transform for the dataset.
+    :param config: Configuration dictionary.
+        {
+            "resize": tuple,
+            "min_max_norm": bool,
+            "zero_mean_norm": bool
+        }
     :return: A torchvision.transforms.Compose object.
     """
-    transform_pipeline = []
+    transforms = []
 
-    if min_max_norm:
-        transform_pipeline.append(MinMaxNormalize())
+    if config.get('resize'):
+        transforms.append(T.Resize(config['resize']))
 
-    if noise_std > 0:
-        transform_pipeline.append(RandomNoise(noise_std))
+    transforms.append(T.ToTensor())
 
-    if erase_p > 0:
-        transform_pipeline.append(RandomErase(p=erase_p, scale=(0.02, 0.2), value=0.0))
+    if config.get('min_max_norm', True):
+        transforms.append(MinMaxNormalize())
 
-    if resize:
-        transform_pipeline.append(T.Resize(size=resize))
+    if config.get('zero_mean_norm', False):
+        transforms.append(ZeroMeanNormalize())
 
-    return T.Compose(transform_pipeline)
+    return T.Compose(transforms)
 
+
+def build_aug_transform(config):
+    """
+    Build the augmentation transform for the dataset.
+    :param config: Configuration dictionary.
+        {
+            "noise_level": float,
+            "spike_prob": float,
+            "random_erase": float
+        }
+    :return: A torchvision.transforms.Compose object.
+    """
+    transforms = []
+
+    if config.get('noise_level', 0) > 0:
+        transforms.append(NoiseInjection(
+            noise_level=config['noise_level'],
+            spike_prob=config.get('spike_prob', 0.02)
+        ))
+
+    if config.get('random_erase', 0) > 0:
+        transforms.append(RandomErase(
+            p=config['random_erase_prob'],
+            scale=config.get('random_erase_scale', (0.02, 0.2)),
+            value=config.get('random_erase_value', 0.0)
+        ))
+
+    return T.Compose(transforms)
+
+
+def build_dynamic_transform(config, aug_prob):
+    """
+    Build the dynamic transform for the dataset.
+
+    :param config: Configuration dictionary.
+    :param aug_prob: float, The probability of applying the augmentation transform.
+    :return: A torchvision.transforms.Compose object.
+    """
+    base = build_base_transform(config)
+    aug = build_aug_transform(config)
+
+    return T.Compose([
+        base,
+        T.RandomApply([aug], p=aug_prob)
+    ])
