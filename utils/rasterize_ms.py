@@ -115,15 +115,15 @@ def rasterize_ms_to_image(ms_file_path, image_path=None, image_size=(500, 500), 
 if __name__ == '__main__':
 
     # Test
-    ms_file_path = r'E:\msdata\ST000923\HMP2_C8-pos\C8p_rawData\CD\0024_XAV_iHMP2_LIP_SM-6CAJC_CD.mzML'
-    rasterize_ms_to_image(
-        ms_file_path=ms_file_path,
-        image_path=None,
-        image_size=(500, 500),
-        show_image=True
-    )
+    # ms_file_path = r'E:\msdata\ST000923\HMP2_C8-pos\C8p_rawData\CD\0024_XAV_iHMP2_LIP_SM-6CAJC_CD.mzML'
+    # rasterize_ms_to_image(
+    #     ms_file_path=ms_file_path,
+    #     image_path=None,
+    #     image_size=(500, 500),
+    #     show_image=True
+    # )
 
-    def get_int_input(prompt, default):
+    def get_image_size_input(prompt, default):
         while True:
             user_input = input(prompt)
             if user_input.strip() == '':
@@ -135,20 +135,28 @@ if __name__ == '__main__':
                 print('Invalid input. Please enter an integer value.')
 
     ms_files_dir = input('Please input the directory of mass spectrometry files: ')
-    suffix = input('Please input the file suffix (e.g., .mzML, .raw): ')
-    if not suffix.startswith('.'):
-        suffix = '.' + suffix
-    image_size_width = get_int_input('Please input the width of the image (default 500): ', 500)
-    image_size_height = get_int_input('Please input the height of the image (default 500): ', 500)
+    while True:
+        suffix = input('Please input the file suffix (e.g., .mzML, .mzXML): ').strip() or '.mzML'
+        if '.' not in suffix:
+            print('Error: File suffix must contain a dot (e.g., .mzML, .mzXML)')
+        else:
+            break
+    image_size_width = get_image_size_input('Please input the width of the image (default 500): ', 500)
+    image_size_height = get_image_size_input('Please input the height of the image (default 500): ', 500)
     image_size = (image_size_width, image_size_height)
 
     if os.path.exists(ms_files_dir):
+        images_dir = os.path.join(ms_files_dir, 'images')
+        os.makedirs(images_dir, exist_ok=True)
+
         ms_file_paths = get_file_paths(base_dir=ms_files_dir, suffix=suffix)
 
         for ms_file_path in ms_file_paths:
-            images_dir = os.path.join(ms_files_dir, 'images')
-            os.makedirs(images_dir, exist_ok=True)
             image_path = os.path.join(images_dir, os.path.splitext(os.path.basename(ms_file_path))[0] + '.png')
-            rasterize_ms_to_image(ms_file_path=ms_file_path, image_path=image_path, image_size=image_size)
+
+            if not os.path.exists(image_path):
+                rasterize_ms_to_image(ms_file_path=ms_file_path, image_path=image_path, image_size=image_size, show_image=False)
+            else:
+                print(f'Image already exists: {image_path}')
     else:
         raise FileNotFoundError(f"Directory {ms_files_dir} not found.")
