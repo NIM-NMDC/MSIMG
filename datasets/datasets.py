@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 
 import os
-import Image
+from PIL import Image
 
 
 class MS2DImgDataset(Dataset):
@@ -15,7 +15,7 @@ class MS2DImgDataset(Dataset):
         self.img_samples = []
         for file_path in file_paths:
             if get_label_function:
-                label = get_label_function(file_paths)
+                label = get_label_function(file_path)
             else:
                 raise ValueError('get_label_function is required.')
             self.img_samples.append(
