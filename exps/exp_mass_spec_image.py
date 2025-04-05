@@ -4,6 +4,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 import os
+import numpy as np
 import pandas as pd
 import argparse
 from datetime import datetime
@@ -39,16 +40,16 @@ def exp(exp_args, save_dir, label_mapping, device, use_multi_gpu=False):
         num_workers=exp_args['num_workers']
     )
 
-    print(f"{exp_args['model_name']} {exp_args['dataset']}_dataset num_classes {exp_args['num_classes']}")
-    exp_dir_name = f"{exp_args['model_name']}_{exp_args['dataset']}_dataset_num_classes_{exp_args['num_classes']}"
+    print(f"{exp_args['model_name']} {exp_args['dataset_name']}_dataset num_classes {exp_args['num_classes']}")
+    exp_dir_name = f"{exp_args['model_name']}_{exp_args['dataset_name']}_dataset_num_classes_{exp_args['num_classes']}"
     exp_dir = os.path.join(save_dir, exp_dir_name)
     if not os.path.exists(exp_dir):
         os.makedirs(exp_dir)
 
-    exp_model_name = f"{exp_args['model_name']}_train_{exp_args['dataset']}_dataset"
+    exp_model_name = f"{exp_args['model_name']}_train_{exp_args['dataset_name']}_dataset"
 
     model = build_resnet(
-        model_name=exp_args['model_name'],
+        model_name=exp_args['model_name'].lower(),
         num_classes=exp_args['num_classes'],
         in_channels=exp_args['in_channels'],
         pretrained=exp_args['pretrained']
@@ -62,7 +63,8 @@ def exp(exp_args, save_dir, label_mapping, device, use_multi_gpu=False):
     else:
         model = model.to(device)
 
-    class_weights = compute_class_weight('balanced', classes=list(label_mapping.values()), y=train_dataset.labels)
+    train_labels = [sample['label'] for sample in train_dataset.img_samples]
+    class_weights = compute_class_weight('balanced', classes=np.array(list(label_mapping.values())), y=np.array(train_labels))
     class_weights = torch.tensor(class_weights, dtype=torch.float32, device=device)
 
     criterion = nn.CrossEntropyLoss(weight=class_weights)
@@ -122,10 +124,10 @@ def main():
     parser.add_argument('--root_dir', type=str, default='../', help='Root directory')
     parser.add_argument('--save_dir', type=str, default='checkpoints', help='Directory to save checkpoints')
     parser.add_argument('--model_name', type=str, default='ResNet50', help='Model name')
-    parser.add_argument('--dataset', type=str, required=True, help='Dataset to use')
+    parser.add_argument('--dataset_name', type=str, default='IBD_2D_Full_MZ', help='Dataset to use')
 
     parser.add_argument('--in_channels', type=int, default=1, help='Number of input channels')
-    parser.add_argument('--num_classes', type=int, default=None, help='Number of classes')
+    parser.add_argument('--num_classes', type=int, default=3, help='Number of classes')
 
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
     parser.add_argument('--epochs', type=int, default=128, help='Number of epochs')
@@ -152,10 +154,24 @@ def main():
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    dataset_dir = {}
+    dataset_dict = {
+        'IBD_2D_Full_MZ': 'datasets/IBD_2D/full_mz',
+    }
+    dataset_dir = os.path.join(args.root_dir, dataset_dict[args.dataset_name])
     label_mapping = {'HC': 0, 'CD': 1, 'UC': 2}
 
-    args.add_args = {
+    exp_args = {
+        'model_name': args.model_name,
+        'dataset_name': args.dataset_name,
+        'root_dir': args.root_dir,
+        'dataset_dir': dataset_dir,
+
+        'in_channels': args.in_channels,
+        'num_classes': args.num_classes,
+        'num_workers': 4,
+        'batch_size': args.batch_size,
+        'epochs': args.epochs,
+
         'resize': (256, 256),
         'min_max_norm': True,
         'zero_mean_norm': False,
@@ -163,18 +179,24 @@ def main():
         'spike_prob': 0.02,
         'random_erase_prob': 0.5,
         'random_erase_scale': (0.02, 0.2),
-        'random_erase_value': 0.0
+        'random_erase_value': 0.0,
+        'pretrained': False,
+        'use_augmentation': args.use_augmentation,
+        'use_normalization': args.use_normalization,
+        'use_early_stopping': args.use_early_stopping,
+        'patience': args.patience,
+        'random_seed': 3407,
     }
 
     exp_dir, trained_model_name, metrics_results = exp(
-        exp_args=args,
+        exp_args=exp_args,
         save_dir=save_dir,
         label_mapping=label_mapping,
         device=device,
         use_multi_gpu=args.use_multi_gpu
     )
 
-    print(f"{args['model_name']} {args['dataset']}_dataset num_classes {args['num_classes']}")
+    print(f"{exp_args['model_name']} {exp_args['dataset']}_dataset num_classes {exp_args['num_classes']}")
 
     for metric, result in metrics_results.items():
         print(f'{metric}: {result:.4f}')
