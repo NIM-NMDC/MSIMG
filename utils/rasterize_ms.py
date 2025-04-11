@@ -51,6 +51,13 @@ def parse_spec(spec, mz_min, mz_max, bin_size):
 
 def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
     try:
+        save_dir = os.path.dirname(ms_file_path)
+        file_name = os.path.splitext(os.path.basename(ms_file_path))[0]
+        save_path = os.path.join(save_dir, f'{prefix}_{file_name}.npz')
+
+        if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
+            return True
+
         reader = mzml.read(ms_file_path) if ms_file_path.endswith('.mzML') else mzxml.read(ms_file_path)
 
         pseudo_ms_image = []
@@ -62,10 +69,6 @@ def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
         pseudo_ms_image = pseudo_ms_image.to_numpy()
 
         sparse_table = sparse.csr_matrix(pseudo_ms_image, dtype=np.float32)
-
-        save_dir = os.path.dirname(ms_file_path)
-        file_name = os.path.splitext(os.path.basename(ms_file_path))[0]
-        save_path = os.path.join(save_dir, f'{prefix}_{file_name}.npz')
         sparse.save_npz(save_path, sparse_table)
         del pseudo_ms_image
         del reader
