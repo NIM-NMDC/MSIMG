@@ -21,17 +21,18 @@ def extract_patches(image, patch_width=224, patch_height=224, overlap_col=0, ove
     """
     assert len(image.shape) == 2, "Image should be a 2D array"
     H, W = image.shape
+
+    step_h = patch_height - overlap_row
+    step_w = patch_width - overlap_col
+
     patches = []
     positions = []
 
-    step_col = patch_width - overlap_col
-    step_row = patch_height - overlap_row
-
-    for row_idx, i in enumerate(range(0, H - patch_height + 1, step_row)):
-        for col_idx, j in enumerate(range(0, W - patch_width + 1, step_col)):
-            patch = image[i:i + patch_height, j:j + patch_width]
+    for y in range(0, H - patch_height + 1, step_h):
+        for x in range(0, W - patch_width + 1, step_w):
+            patch = image[y:y + patch_height, x:x + patch_width]
             patches.append(patch)
-            positions.append((row_idx, col_idx))
+            positions.append((y, x))
 
     return np.array(patches), np.array(positions)
 
@@ -69,31 +70,38 @@ def calculate_mean(image):
 
 
 def calculate_patches_top_k(file_path, prefix, method, patch_width, patch_height, overlap_col, overlap_row):
-    sparse_matrix = sparse.load_npz(file_path)
-    raw_image = sparse_matrix.toarray()
-    raw_image = raw_image / raw_image.max()  # Normalize the image to [0, 1]
+    try:
+        save_dir = os.path.dirname(file_path)
+        file_name = os.path.basename(file_path)
+        save_path = os.path.join(save_dir, f'{prefix}_{file_name}')
 
-    patches, positions = extract_patches(
-        image=raw_image,
-        patch_width=patch_width,
-        patch_height=patch_height,
-        overlap_col=overlap_col,
-        overlap_row=overlap_row
-    )
+        if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
+            return np.load(save_path)['scores']
 
-    if method == 'entropy':
-        scores = np.array([calculate_entropy(patch) for patch in patches])
-    elif method == 'mean':
-        scores = np.array([calculate_mean(patch) for patch in patches])
-    else:
-        raise ValueError('Invalid method. Choose either "entropy" or "mean".')
+        sparse_matrix = sparse.load_npz(file_path)
+        raw_image = sparse_matrix.toarray()
+        raw_image = raw_image / raw_image.max()  # Normalize the image to [0, 1]
 
-    save_dir = os.path.dirname(file_path)
-    file_name = os.path.basename(file_path)
-    save_path = os.path.join(save_dir, f'{prefix}_{file_name}')
-    np.savez_compressed(save_path, patches=patches, positions=positions)
+        patches, positions = extract_patches(
+            image=raw_image,
+            patch_width=patch_width,
+            patch_height=patch_height,
+            overlap_col=overlap_col,
+            overlap_row=overlap_row
+        )
 
-    return scores
+        if method == 'entropy':
+            scores = np.array([calculate_entropy(patch) for patch in patches])
+        elif method == 'mean':
+            scores = np.array([calculate_mean(patch) for patch in patches])
+        else:
+            raise ValueError('Invalid method. Choose either "entropy" or "mean".')
+
+        np.savez_compressed(save_path, patches=patches, positions=positions, scores=scores)
+
+        return scores
+    except Exception as e:
+        raise RuntimeError(f"Error processing {file_path}: {e}")
 
 
 def parallel_calculate_patches_top_k(file_paths, prefix, method='entropy', patch_width=224, patch_height=224, overlap_col=0, overlap_row=0, top_k=512, workers=4):
@@ -146,17 +154,39 @@ def parallel_calculate_patches_top_k(file_paths, prefix, method='entropy', patch
 
 def select_top_k_patches(file_path, prefix, top_k_indices):
     try:
+        save_dir = os.path.dirname(file_path)
+        file_name = os.path.basename(file_path)
+        save_path = os.path.join(save_dir, f"{prefix}_{file_name}")
+
+        if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
+            return True
+
         patched_file = np.load(file_path)
         patches = patched_file['patches']
         positions = patched_file['positions']
 
-        selected_patches = patches[top_k_indices]
-        selected_positions = positions[top_k_indices]
+        num_patches = len(patches)
 
-        save_dir = os.path.dirname(file_path)
-        file_name = os.path.basename(file_path)
-        save_path = os.path.join(save_dir, f"{prefix}_{file_name}")
-        np.savez_compressed(save_path, patches=selected_patches, positions=selected_positions)
+        patch_height, patch_width = patches[0].shape[:2]
+
+        zero_padding = np.zeros((patch_width, patch_height), dtype=patches[0].dtype)
+
+        selected_patches = []
+        selected_positions = []
+
+        for idx in top_k_indices:
+            if idx < num_patches:
+                selected_patches.append(patches[idx])
+                selected_positions.append(positions[idx])
+            else:
+                selected_patches.append(zero_padding)
+                selected_positions.append((-1, -1))
+
+        selected_patches = np.array(selected_patches)
+        selected_positions = np.array(selected_positions)
+        padding_mask = (selected_positions == -1).all(axis=1)
+
+        np.savez_compressed(save_path, patches=selected_patches, positions=selected_positions, padding_mask=padding_mask)
 
         return True
     except Exception as e:
