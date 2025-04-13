@@ -30,13 +30,13 @@ if __name__ == '__main__':
     parser.add_argument('--mz_min', type=float, required=True, help='Minimum m/z value for binning')
     parser.add_argument('--mz_max', type=float, required=True, help='Maximum m/z value for binning')
     parser.add_argument('--bin_size', type=float, required=True, help='Bin size for m/z binning')
-
     parser.add_argument('--select_method', type=str, default='entropy', help='Method to calculate (e.g. Entropy: 1D image entropy, Mean: mean intensity)')
     parser.add_argument('--patch_width', type=int, default=224, help='Width of the patches to be extracted')
     parser.add_argument('--patch_height', type=int, default=224, help='Height of the patches to be extracted')
     parser.add_argument('--overlap_col', type=int, default=0, help='Number of overlapping pixels between patches in the column direction')
     parser.add_argument('--overlap_row', type=int, default=0, help='Number of overlapping pixels between patches in the row direction')
     parser.add_argument('--top_k', type=int, default=512, help='Number of patches to be selected')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of worker processes to use')
 
     args = parser.parse_args()
 
@@ -52,19 +52,20 @@ if __name__ == '__main__':
                 if file_name.endswith(args.suffix):
                     dataset_files[class_name].append(os.path.join(class_dir, file_name))
 
+    print('Beginning Dataset Processing Workflow...')
+    print('Binning MS Files...')
     binned_dataset_files = defaultdict(list)
     bin_prefix = f'mz_{args.mz_min}-{args.mz_max}_bin_size_{args.bin_size}'
     for class_name, file_paths in dataset_files.items():
         print(f"Processing class: {class_name}")
-        # save_dir = os.path.join(args.dataset_dir, class_name)
-        # os.makedirs(save_dir, exist_ok=True)
 
         parallel_parse_ms(
             ms_file_paths=file_paths,
             prefix=bin_prefix,
             mz_min=args.mz_min,
             mz_max=args.mz_max,
-            bin_size=args.bin_size
+            bin_size=args.bin_size,
+            workers=args.num_workers
         )
 
         binned_dataset_files[class_name] = [
@@ -73,8 +74,9 @@ if __name__ == '__main__':
         ]
 
     print('Dataset Binning Process Completed.')
-    print(binned_dataset_files)
+    # print(binned_dataset_files)
 
+    print('Patching MS Files...')
     patched_dataset_files = defaultdict(list)
     top_k_indices_dict = {}
     patch_prefix = f'patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}'
@@ -88,7 +90,8 @@ if __name__ == '__main__':
             patch_height=args.patch_height,
             overlap_col=args.overlap_col,
             overlap_row=args.overlap_row,
-            top_k=args.top_k
+            top_k=args.top_k,
+            workers=args.num_workers
         )
         top_k_indices_dict[class_name] = top_k_indices
 
@@ -98,9 +101,10 @@ if __name__ == '__main__':
         ]
 
     print('Dataset Patching Process Completed.')
-    print(patched_dataset_files)
-    print(top_k_indices_dict)
+    # print(patched_dataset_files)
+    # print(top_k_indices_dict)
 
+    print('Selecting Top K Patches...')
     selected_patches_dataset_files = defaultdict(list)
     select_prefix = f'top_{args.top_k}'
     for class_name, file_paths in patched_dataset_files.items():
@@ -111,6 +115,7 @@ if __name__ == '__main__':
             file_paths=file_paths,
             prefix=select_prefix,
             top_k_indices=top_k_indices,
+            workers=args.num_workers
         )
 
         selected_patches_dataset_files[class_name] = [
@@ -119,9 +124,11 @@ if __name__ == '__main__':
         ]
 
     print('Top K Patches Selection Process Completed.')
-    print(selected_patches_dataset_files)
+    # print(selected_patches_dataset_files)
 
     # Move processed files to a new directory
     move_dataset(dataset_dir=args.dataset_dir, save_dir=bin_prefix, dataset_files=binned_dataset_files)
     move_dataset(dataset_dir=args.dataset_dir, save_dir=f'{patch_prefix}_{bin_prefix}', dataset_files=patched_dataset_files)
     move_dataset(dataset_dir=args.dataset_dir, save_dir=f'{select_prefix}_{patch_prefix}_{bin_prefix}', dataset_files=selected_patches_dataset_files)
+
+    print('Dataset Process Workflow Completed.')
