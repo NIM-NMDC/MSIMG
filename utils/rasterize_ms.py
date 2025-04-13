@@ -65,7 +65,7 @@ def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
             binned_spec = parse_spec(spec, mz_min, mz_max, bin_size)
             pseudo_ms_image.append(binned_spec)
 
-        pseudo_ms_image = pd.DataFrame(pseudo_ms_image).T  # pseudo_ms_image: (mz_bins, scans)
+        pseudo_ms_image = pd.DataFrame(pseudo_ms_image).T  # pseudo_ms_image: (scans, mz_bins) -> (mz_bins, scans)
         pseudo_ms_image = pseudo_ms_image.to_numpy()
 
         sparse_table = sparse.csr_matrix(pseudo_ms_image, dtype=np.float32)
