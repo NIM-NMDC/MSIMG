@@ -145,9 +145,19 @@ def parallel_calculate_patches_top_k(file_paths, prefix, method='entropy', patch
     if not valid_results:
         raise RuntimeError("No valid files processed")
 
-    patch_scores = sum(valid_results)
-    avg_score = patch_scores / len(valid_results)
-    top_k_indices = np.argsort(avg_score)[-top_k:][::-1]  # Get top k indices
+    """
+    When processing mass spectrometry data, the resulting matrix has a shape of (mz_bins, scans), 
+    where mz_bins is fixed, but the number of scans may vary depending on how many spectra were collected in each file. 
+    To ensure comparability during patch scoring and selection, we normalize the number of scores across all files. 
+    Specifically, we truncate all score arrays to the same minimum length, retaining only the initial portion of patches for each file. 
+    Any extra patches in files with more scans are discarded, which does not compromise the fairness or consistency of the overall evaluation.
+    """
+    min_len = min(len(scores) for scores in valid_results)
+    valid_results_trimmed = [scores[:min_len] for scores in valid_results]
+
+    patch_scores = sum(valid_results_trimmed)
+    avg_scores = patch_scores / len(valid_results_trimmed)
+    top_k_indices = np.argsort(avg_scores)[-top_k:][::-1]  # Get top k indices
 
     return top_k_indices
 
