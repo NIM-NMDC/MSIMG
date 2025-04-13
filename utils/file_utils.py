@@ -40,8 +40,9 @@ if __name__ == '__main__':
         return parts[-1] if parts else None
 
     base_dir = input('Please input the mass spectrometry files directory: ')
-    target_labels_input = input('Please input the target labels (separated by comma): ')
+    target_labels_input = input('Please input the target labels (e.g., HC, CD, UC): ')
     target_labels = [label.strip() for label in target_labels_input.split(',') if label.strip()]
+    print(target_labels)
     suffix = input('Please input the file suffix (e.g., .mzML, .raw): ')
     if not suffix.startswith('.'):
         suffix = '.' + suffix
