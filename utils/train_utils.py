@@ -31,7 +31,7 @@ def train(
         epoch_digits = len(str(epochs))
         epoch_str = f'{epoch + 1}'.zfill(epoch_digits)
         train_progress_bar = tqdm(train_loader, desc=f'Epoch: {epoch_str} Training', leave=True)
-        for X, y in train_progress_bar:
+        for X, _, _, y in train_progress_bar:
             X, y = X.to(device), y.to(device)
 
             for optimizer in optimizers:
@@ -59,7 +59,7 @@ def train(
         total_valid_samples = 0
         valid_progress_bar = tqdm(valid_loader, desc=f'Epoch: {epoch_str} Evaluating', leave=True)
         with torch.no_grad():
-            for X, y in valid_progress_bar:
+            for X, _, _, y in valid_progress_bar:
                 X, y = X.to(device), y.to(device)
 
                 logits = model(X)
@@ -153,7 +153,7 @@ def test(
     all_predicts_proba = []
     test_progress_bar = tqdm(test_loader, desc=f'Testing', leave=True)
     with torch.no_grad():
-        for X, y in test_progress_bar:
+        for X, _, _, y in test_progress_bar:
             X, y = X.to(device), y.to(device)
 
             logits = model(X)
