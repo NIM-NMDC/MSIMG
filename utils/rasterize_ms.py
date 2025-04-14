@@ -58,12 +58,20 @@ def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
         if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
             return True
 
-        reader = mzml.read(ms_file_path) if ms_file_path.endswith('.mzML') else mzxml.read(ms_file_path)
+        if ms_file_path.endswith('.mzML'):
+            reader = mzml.read(ms_file_path)
+            ms_level_key = 'ms level'
+        elif ms_file_path.endswith('.mzXML'):
+            reader = mzxml.read(ms_file_path)
+            ms_level_key = 'msLevel'
+        else:
+            raise ValueError(f"Unsupported file format: {ms_file_path}")
 
         pseudo_ms_image = []
         for spec in reader:
-            binned_spec = parse_spec(spec, mz_min, mz_max, bin_size)
-            pseudo_ms_image.append(binned_spec)
+            if spec.get(ms_level_key, 0) == 1:
+                binned_spec = parse_spec(spec, mz_min, mz_max, bin_size)
+                pseudo_ms_image.append(binned_spec)
 
         pseudo_ms_image = pd.DataFrame(pseudo_ms_image).T  # pseudo_ms_image: (scans, mz_bins) -> (mz_bins, scans)
         pseudo_ms_image = pseudo_ms_image.to_numpy()
@@ -74,8 +82,7 @@ def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
         del reader
         return True
     except Exception as e:
-        print(f"Error processing file {ms_file_path}: {e}")
-        return False
+        raise RuntimeError(f"Error processing {ms_file_path}: {e}")
 
 
 def parallel_parse_ms(ms_file_paths, prefix, mz_min, mz_max, bin_size, workers=4):
