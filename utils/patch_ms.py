@@ -200,8 +200,7 @@ def select_top_k_patches(file_path, prefix, top_k_indices):
 
         return True
     except Exception as e:
-        print(f"Error processing {file_path}: {e}")
-        return False
+        raise RuntimeError(f"Error processing {file_path}: {e}")
 
 
 def parallel_select_top_k_patches(file_paths, prefix, top_k_indices, workers=4):
