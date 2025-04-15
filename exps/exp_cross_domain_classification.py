@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 import os
 import numpy as np
@@ -17,14 +17,15 @@ from callbacks.early_stopping import EarlyStopping
 from utils.train_utils import train, test
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3, 4, 5, 6, 7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
 
 
-def create_dataset(dataset, label_mapping, transform=None):
+def create_dataset(dataset, label_mapping, transform=None, preload=False):
     return MS2DIMGDataset(
         dataset=dataset,
         label_mapping=label_mapping,
-        transform=transform
+        transform=transform,
+        preload=preload
     )
 
 
@@ -35,7 +36,7 @@ def exp(args):
 
     for dataset_dir in args.dataset_dirs:
         _train_set, _valid_set, _test_set = split_dataset_files_by_class_stratified(
-            root_dir=dataset_dir,
+            dataset_dir=dataset_dir,
             train_size=0.8,
             test_size=0.1,
             random_seed=args.random_seed
@@ -45,32 +46,32 @@ def exp(args):
         test_set.extend(_test_set)
 
     train_loader = DataLoader(
-        create_dataset(train_set, args.label_mapping),
+        create_dataset(dataset=train_set, label_mapping=args.label_mapping, preload=args.preload),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers
     )
     valid_loader = DataLoader(
-        create_dataset(valid_set, args.label_mapping),
+        create_dataset(dataset=valid_set, label_mapping=args.label_mapping, preload=args.preload),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers
     )
     test_loader = DataLoader(
-        create_dataset(valid_set, args.label_mapping),
+        create_dataset(dataset=test_set, label_mapping=args.label_mapping, preload=args.preload),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers
     )
 
-    print(f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
-    exp_dir_name = f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
+    print(f"{args.model_name}_{'_'.join(args.dataset_names)}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
+    exp_dir_name = f"{args.model_name}_{'_'.join(args.dataset_names)}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
     exp_dir = os.path.join(args.save_dir, exp_dir_name)
 
     if not os.path.exists(exp_dir):
         os.makedirs(exp_dir)
 
-    exp_model_name = f"{args.model_name}_train_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
+    exp_model_name = f"{args.model_name}_train_{'_'.join(args.dataset_names)}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
 
     model = build_resnet(
         model_name=args.model_name.lower(),
@@ -81,8 +82,11 @@ def exp(args):
 
     if args.use_multi_gpu and torch.cuda.device_count() > 1:
         print(f'Using {torch.cuda.device_count()} GPUs for training.')
-        device = torch.device('cuda:0')
-        model = model.to(device)
+        # device = torch.device('cuda:0')
+        # model = model.to(device)
+        # model = nn.DataParallel(model)
+
+        model = model.to(args.device)
         model = nn.DataParallel(model)
     else:
         model = model.to(args.device)
@@ -149,6 +153,7 @@ def main():
     parser.add_argument('--save_dir', type=str, default='checkpoints', help='Directory to save checkpoints')
     parser.add_argument('--model_name', type=str, default='ResNet50', help='Model name')
     parser.add_argument('--dataset_names', nargs='+', required=True, help='List of datasets to use (e.g. ST000923-C8-pos ST000923-C18-neg)')
+    parser.add_argument('--label_maps', nargs='+', help='List of label maps to use (e.g. HC=0 CD=1 UC=2)')
 
     parser.add_argument('--top_k', type=int, default=512, help='Number of patches to be selected')
     parser.add_argument('--patch_width', type=int, default=224, help='Width of the patches to be extracted')
@@ -160,6 +165,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
     parser.add_argument('--epochs', type=int, default=128, help='Number of epochs')
     parser.add_argument('--device', type=str, default=None, help='Device to use')
+    parser.add_argument('--preload', action='store_true', help='Preload dataset into memory')
     parser.add_argument('--num_workers', type=int, default=32, help='Number of workers for DataLoader')
     parser.add_argument('--pretrained', action='store_true', help='Use pretrained model')
     parser.add_argument('--use_multi_gpu', action='store_true', help='Use multiple GPUs')
@@ -177,17 +183,29 @@ def main():
         if args.patience is None:
             args.patience = 10
 
+    if args.preload:
+        args.num_workers = 0  # Set to 0 to avoid issues with DataLoader
+
     # Set save directory
     save_dir = os.path.join(args.root_dir, args.save_dir)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     args.save_dir = save_dir
 
+    dataset_parent_dir = f"datasets/IBD_2D/top_{args.top_k}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}_bin_size_{args.bin_size}"
     dataset_dict = {
-        'ST000923-C8-pos': f'datasets/IBD_2D/top_{args.top_k}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}_bin_size_{args.bin_size}/ST000923-C8-pos',
-        'ST000923-C18-neg': f'datasets/IBD_2D/top_{args.top_k}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}_bin_size_{args.bin_size}/ST000923-C18-neg',
-        'ST000923-HILIC-pos': f'datasets/IBD_2D/top_{args.top_k}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}_bin_size_{args.bin_size}/ST000923-HILIC-pos',
-        'ST000923-HILIC-neg': f'datasets/IBD_2D/top_{args.top_k}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}_bin_size_{args.bin_size}/ST000923-HILIC-neg'
+        'ST000923-C8-pos': f"{dataset_parent_dir}/ST000923-C8-pos",
+        'ST000923-C18-neg': f"{dataset_parent_dir}/ST000923-C18-neg",
+        'ST000923-HILIC-pos': f"{dataset_parent_dir}/ST000923-HILIC-pos",
+        'ST000923-HILIC-neg': f"{dataset_parent_dir}/ST000923-HILIC-neg",
+        'ST001000-C8-pos': f"{dataset_parent_dir}/ST001000-C8-pos",
+        'ST001000-C18-neg': f"{dataset_parent_dir}/ST001000-C18-neg",
+        'ST001000-HILIC-pos': f"{dataset_parent_dir}/ST001000-HILIC-pos",
+        'ST0001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
+        'ST003161': f"{dataset_parent_dir}/ST003161",
+        'ST003313': f"{dataset_parent_dir}/ST003313",
+        'PXD10371': f"{dataset_parent_dir}/PXD10371",
+        'MSV000089237': f"{dataset_parent_dir}/MSV000089237",
     }
     dataset_dirs = []
     if args.dataset_names == ['.'] or args.dataset_names == ['all'] or args.dataset_names == ['ALL'] or args.dataset_names == ['All']:
@@ -195,21 +213,31 @@ def main():
 
     for dataset_name in args.dataset_names:
         if dataset_name in dataset_dict:
-            dataset_dir = os.path.join(args.root_dir, dataset_dict[args.dataset_name])
+            dataset_dir = os.path.join(args.root_dir, dataset_dict[dataset_name])
             if not os.path.exists(dataset_dir):
                 raise FileNotFoundError(f"Dataset directory {dataset_dir} does not exist.")
-            dataset_dirs.append(dataset_dict[dataset_name])
+            dataset_dirs.append(dataset_dir)
         else:
             raise ValueError(f"Dataset name {dataset_name} not found in dataset_dict.")
     args.dataset_dirs = dataset_dirs
 
-    label_mapping = {'nonIBD': 0, 'CD': 1, 'UC': 2}
+    label_mapping = {}
+    if args.label_maps:
+        for pair in args.label_maps:
+            label, value = pair.split('=')
+            if value.isdigit():
+                label_mapping[label] = int(value)
+            else:
+                raise ValueError(f"Invalid label mapping: {pair}. Value must be an integer.")
+    else:
+        label_mapping = {'HC': 0, 'CD': 1, 'UC': 2}
+
     args.label_mapping = label_mapping
     args.num_classes = len(label_mapping)
 
     exp_dir, trained_model_name, metrics_results = exp(args)
 
-    print(f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
+    print(f"{args.model_name}_{'_'.join(args.dataset_names)}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
 
     for metric, result in metrics_results.items():
         print(f'{metric}: {result:.4f}')
