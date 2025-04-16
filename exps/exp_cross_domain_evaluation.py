@@ -66,7 +66,7 @@ def _get_dataset(dataset_dir, random_seed):
     return dataset
 
 
-def create_dataset(dataset, label_mapping, transform=None):
+def _create_dataset(dataset, label_mapping, transform=None):
     return MS2DIMGDataset(
         dataset=dataset,
         label_mapping=label_mapping,
@@ -92,19 +92,19 @@ def exp(args):
         test_set.extend(_test_set)
 
     train_loader = DataLoader(
-        create_dataset(train_set, args.label_mapping),
+        _create_dataset(train_set, args.label_mapping),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers
     )
     valid_loader = DataLoader(
-        create_dataset(valid_set, args.label_mapping),
+        _create_dataset(valid_set, args.label_mapping),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers
     )
     test_loader = DataLoader(
-        create_dataset(test_set, args.label_mapping),
+        _create_dataset(test_set, args.label_mapping),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers
@@ -245,7 +245,7 @@ def main():
         'ST001000-C8-pos': f"{dataset_parent_dir}/ST001000-C8-pos",
         'ST001000-C18-neg': f"{dataset_parent_dir}/ST001000-C18-neg",
         'ST001000-HILIC-pos': f"{dataset_parent_dir}/ST001000-HILIC-pos",
-        'ST0001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
+        'ST001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
         'ST003161': f"{dataset_parent_dir}/ST003161",
         'ST003313': f"{dataset_parent_dir}/ST003313",
         'PXD10371': f"{dataset_parent_dir}/PXD10371",

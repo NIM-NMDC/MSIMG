@@ -17,10 +17,10 @@ from callbacks.early_stopping import EarlyStopping
 from utils.train_utils import train, test
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3, 4, 5, 6, 7"
 
 
-def create_dataset(dataset, label_mapping, transform=None, preload=False):
+def _create_dataset(dataset, label_mapping, transform=None, preload=False):
     return MS2DIMGDataset(
         dataset=dataset,
         label_mapping=label_mapping,
@@ -39,19 +39,19 @@ def exp(args):
     )
 
     train_loader = DataLoader(
-        create_dataset(dataset=train_set, label_mapping=args.label_mapping, preload=args.preload),
+        _create_dataset(dataset=train_set, label_mapping=args.label_mapping, preload=args.preload),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers
     )
     valid_loader = DataLoader(
-        create_dataset(dataset=valid_set, label_mapping=args.label_mapping, preload=args.preload),
+        _create_dataset(dataset=valid_set, label_mapping=args.label_mapping, preload=args.preload),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers
     )
     test_loader = DataLoader(
-        create_dataset(dataset=test_set, label_mapping=args.label_mapping, preload=args.preload),
+        _create_dataset(dataset=test_set, label_mapping=args.label_mapping, preload=args.preload),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers
@@ -191,7 +191,7 @@ def main():
         'ST001000-C8-pos': f"{dataset_parent_dir}/ST001000-C8-pos",
         'ST001000-C18-neg': f"{dataset_parent_dir}/ST001000-C18-neg",
         'ST001000-HILIC-pos': f"{dataset_parent_dir}/ST001000-HILIC-pos",
-        'ST0001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
+        'ST001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
         'ST003161': f"{dataset_parent_dir}/ST003161",
         'ST003313': f"{dataset_parent_dir}/ST003313",
         'PXD10371': f"{dataset_parent_dir}/PXD10371",

@@ -17,10 +17,10 @@ from callbacks.early_stopping import EarlyStopping
 from utils.train_utils import train, test
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3, 4, 5, 6, 7"
 
 
-def create_dataset(dataset, label_mapping, transform=None, preload=False):
+def _create_dataset(dataset, label_mapping, transform=None, preload=False):
     return MS2DIMGDataset(
         dataset=dataset,
         label_mapping=label_mapping,
@@ -46,32 +46,32 @@ def exp(args):
         test_set.extend(_test_set)
 
     train_loader = DataLoader(
-        create_dataset(dataset=train_set, label_mapping=args.label_mapping, preload=args.preload),
+        _create_dataset(dataset=train_set, label_mapping=args.label_mapping, preload=args.preload),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers
     )
     valid_loader = DataLoader(
-        create_dataset(dataset=valid_set, label_mapping=args.label_mapping, preload=args.preload),
+        _create_dataset(dataset=valid_set, label_mapping=args.label_mapping, preload=args.preload),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers
     )
     test_loader = DataLoader(
-        create_dataset(dataset=test_set, label_mapping=args.label_mapping, preload=args.preload),
+        _create_dataset(dataset=test_set, label_mapping=args.label_mapping, preload=args.preload),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers
     )
 
-    print(f"{args.model_name}_{'_'.join(args.dataset_names)}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
-    exp_dir_name = f"{args.model_name}_{'_'.join(args.dataset_names)}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
+    print(f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
+    exp_dir_name = f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
     exp_dir = os.path.join(args.save_dir, exp_dir_name)
 
     if not os.path.exists(exp_dir):
         os.makedirs(exp_dir)
 
-    exp_model_name = f"{args.model_name}_train_{'_'.join(args.dataset_names)}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
+    exp_model_name = f"{args.model_name}_train_{args.dataset_info}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
 
     model = build_resnet(
         model_name=args.model_name.lower(),
@@ -201,7 +201,7 @@ def main():
         'ST001000-C8-pos': f"{dataset_parent_dir}/ST001000-C8-pos",
         'ST001000-C18-neg': f"{dataset_parent_dir}/ST001000-C18-neg",
         'ST001000-HILIC-pos': f"{dataset_parent_dir}/ST001000-HILIC-pos",
-        'ST0001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
+        'ST001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
         'ST003161': f"{dataset_parent_dir}/ST003161",
         'ST003313': f"{dataset_parent_dir}/ST003313",
         'PXD10371': f"{dataset_parent_dir}/PXD10371",
@@ -210,6 +210,9 @@ def main():
     dataset_dirs = []
     if args.dataset_names == ['.'] or args.dataset_names == ['all'] or args.dataset_names == ['ALL'] or args.dataset_names == ['All']:
         args.dataset_names = dataset_dict.keys()
+        args.dataset_info = 'IBD_2D'
+    else:
+        args.dataset_info = '_'.join(args.dataset_names)
 
     for dataset_name in args.dataset_names:
         if dataset_name in dataset_dict:
@@ -237,7 +240,7 @@ def main():
 
     exp_dir, trained_model_name, metrics_results = exp(args)
 
-    print(f"{args.model_name}_{'_'.join(args.dataset_names)}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
+    print(f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
 
     for metric, result in metrics_results.items():
         print(f'{metric}: {result:.4f}')
