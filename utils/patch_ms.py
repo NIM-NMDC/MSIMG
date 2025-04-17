@@ -1,6 +1,6 @@
 import os
 import numpy as np
-
+import time
 from tqdm import tqdm
 from scipy import sparse
 from functools import partial
@@ -37,6 +37,82 @@ def extract_patches(image, patch_width=224, patch_height=224, overlap_col=0, ove
     return np.array(patches), np.array(positions)
 
 
+def generate_patches(binned_file_path, prefix, patch_width, patch_height, overlap_col, overlap_row):
+    try:
+        if not (os.path.exists(binned_file_path) and os.path.getsize(binned_file_path) > 0):
+            raise FileNotFoundError(f"File not found or empty: {binned_file_path}")
+
+        # /dataset_dir/{bin_prefix}/{class_name}/{bin_prefix}_file_name.npz
+        # /dataset_dir/{previous_prefix}/{class_name}/{bin_prefix}_file_name.npz
+        previous_prefix = os.path.basename(os.path.dirname(os.path.dirname(binned_file_path)))
+        class_name = os.path.basename(os.path.dirname(binned_file_path))
+        file_name = os.path.basename(binned_file_path)
+
+        dataset_dir = os.path.abspath(os.path.join(binned_file_path, '../../..'))
+        save_dir = os.path.join(dataset_dir, f'{prefix}_{previous_prefix}', class_name)
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f'{prefix}_{file_name}')
+
+        if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
+            return True
+
+        sparse_matrix = sparse.load_npz(binned_file_path)
+        raw_image = sparse_matrix.toarray()
+        raw_image = raw_image / raw_image.max()  # Normalize the image to [0, 1]
+
+        patches, positions = extract_patches(
+            image=raw_image,
+            patch_width=patch_width,
+            patch_height=patch_height,
+            overlap_col=overlap_col,
+            overlap_row=overlap_row
+        )
+
+        np.savez_compressed(save_path, patches=patches, positions=positions)
+
+        return True
+    except Exception as e:
+        raise RuntimeError(f"Error processing {binned_file_path}: {e}")
+
+
+def parallel_generate_patches(binned_file_paths, prefix, method='entropy', patch_width=224, patch_height=224, overlap_col=0, overlap_row=0, workers=4):
+    """
+    Generate patches from pseudo MS images in parallel.
+
+    :param binned_file_paths: List of file paths to the pseudo MS images.
+    :param prefix: Prefix for the save path pattern.
+    :param method: Method to calculate (e.g. Entropy: 1D image entropy, Mean: mean intensity).
+    :param patch_width: The width of the patches to be extracted.
+    :param patch_height: The height of the patches to be extracted.
+    :param overlap_col: The number of overlapping pixels between patches in the column direction.
+    :param overlap_row: The number of overlapping pixels between patches in the row direction.
+    :param workers: Number of worker processes to use.
+    """
+    if method not in ['entropy', 'mean']:
+        raise ValueError('Invalid method. Choose either "entropy" or "mean".')
+
+    with Pool(processes=workers) as pool:
+        worker = partial(
+            generate_patches,
+            prefix=prefix,
+            patch_width=patch_width,
+            patch_height=patch_height,
+            overlap_col=overlap_col,
+            overlap_row=overlap_row
+        )
+
+        results = list(
+            tqdm(
+                pool.imap_unordered(worker, binned_file_paths),
+                total=len(binned_file_paths),
+                desc='Calculating patches scores',
+            )
+        )
+
+    success_rate = sum(results) / len(results)
+    print(f"Patching completed. Success rate: {success_rate:.2%}")
+
+
 def calculate_entropy(image):
     """
     Calculate the 1D entropy of an image.
@@ -69,26 +145,16 @@ def calculate_mean(image):
     return mean
 
 
-def calculate_patches_top_k(file_path, prefix, method, patch_width, patch_height, overlap_col, overlap_row):
+def calculate_patches_scores(patched_file_path, method='entropy'):
     try:
-        save_dir = os.path.dirname(file_path)
-        file_name = os.path.basename(file_path)
-        save_path = os.path.join(save_dir, f'{prefix}_{file_name}')
+        if not (os.path.exists(patched_file_path) and os.path.getsize(patched_file_path) > 0):
+            raise FileNotFoundError(f"File not found or empty: {patched_file_path}")
 
-        if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-            return np.load(save_path)['scores']
+        patched_file = np.load(patched_file_path)
+        patches = patched_file['patches']
 
-        sparse_matrix = sparse.load_npz(file_path)
-        raw_image = sparse_matrix.toarray()
-        raw_image = raw_image / raw_image.max()  # Normalize the image to [0, 1]
-
-        patches, positions = extract_patches(
-            image=raw_image,
-            patch_width=patch_width,
-            patch_height=patch_height,
-            overlap_col=overlap_col,
-            overlap_row=overlap_row
-        )
+        if patches.size == 0:
+            raise ValueError(f"No patches found in the file: {patched_file_path}")
 
         if method == 'entropy':
             scores = np.array([calculate_entropy(patch) for patch in patches])
@@ -97,59 +163,47 @@ def calculate_patches_top_k(file_path, prefix, method, patch_width, patch_height
         else:
             raise ValueError('Invalid method. Choose either "entropy" or "mean".')
 
-        np.savez_compressed(save_path, patches=patches, positions=positions, scores=scores)
-
         return scores
     except Exception as e:
-        raise RuntimeError(f"Error processing {file_path}: {e}")
+        raise RuntimeError(f"Error processing {patched_file_path}: {e}")
 
 
-def parallel_calculate_patches_top_k(file_paths, prefix, method='entropy', patch_width=224, patch_height=224, overlap_col=0, overlap_row=0, top_k=512, workers=4):
+def parallel_calculate_patches_scores(patched_file_paths, method='entropy', workers=4):
     """
-    Calculate the top k patches based on the specified method (entropy or mean) from the pseudo MS images.
+    Calculate scores for patches in parallel and return the full sorted indices.
 
-    :param file_paths: List of file paths to the pseudo MS images.
-    :param prefix: Prefix for the save path pattern.
+    :param patched_file_paths: A list of file paths to the pseudo MS images.
     :param method: Method to calculate (e.g. Entropy: 1D image entropy, Mean: mean intensity).
-    :param patch_width: The width of the patches to be extracted.
-    :param patch_height: The height of the patches to be extracted.
-    :param overlap_col: The number of overlapping pixels between patches in the column direction.
-    :param overlap_row: The number of overlapping pixels between patches in the row direction.
-    :param top_k: The number of patches to be selected.
     :param workers: Number of worker processes to use.
-    :return top_k_indices: Indices of the top k patches.
+    :return: sorted_indices: Indices of the patches sorted by score.
     """
     if method not in ['entropy', 'mean']:
         raise ValueError('Invalid method. Choose either "entropy" or "mean".')
 
     with Pool(processes=workers) as pool:
         worker = partial(
-            calculate_patches_top_k,
-            prefix=prefix,
-            method=method,
-            patch_width=patch_width,
-            patch_height=patch_height,
-            overlap_col=overlap_col,
-            overlap_row=overlap_row
+            calculate_patches_scores,
+            method=method
         )
 
         results = list(
             tqdm(
-                pool.imap_unordered(worker, file_paths),
-                total=len(file_paths),
-                desc='Calculating patches scores',
+                pool.imap_unordered(worker, patched_file_paths),
+                total=len(patched_file_paths),
+                desc=f'Calculating patches {method} scores',
             )
         )
 
     valid_results = [result for result in results if len(result) > 0]
+
     if not valid_results:
-        raise RuntimeError("No valid files processed")
+        raise RuntimeError("No valid scores calculated.")
 
     """
-    When processing mass spectrometry data, the resulting matrix has a shape of (mz_bins, scans), 
-    where mz_bins is fixed, but the number of scans may vary depending on how many spectra were collected in each file. 
-    To ensure comparability during patch scoring and selection, we normalize the number of scores across all files. 
-    Specifically, we truncate all score arrays to the same minimum length, retaining only the initial portion of patches for each file. 
+    When processing mass spectrometry data, the resulting matrix has a shape of (mz_bins, scans),
+    where mz_bins is fixed, but the number of scans may vary depending on how many spectra were collected in each file.
+    To ensure comparability during patch scoring and selection, we normalize the number of scores across all files.
+    Specifically, we truncate all score arrays to the same minimum length, retaining only the initial portion of patches for each file.
     Any extra patches in files with more scans are discarded, which does not compromise the fairness or consistency of the overall evaluation.
     """
     min_len = min(len(scores) for scores in valid_results)
@@ -157,21 +211,31 @@ def parallel_calculate_patches_top_k(file_paths, prefix, method='entropy', patch
 
     patch_scores = sum(valid_results_trimmed)
     avg_scores = patch_scores / len(valid_results_trimmed)
-    top_k_indices = np.argsort(avg_scores)[-top_k:][::-1]  # Get top k indices
 
-    return top_k_indices
+    # Get the indices sorted by score in descending order (highest score first)
+    sorted_indices = np.argsort(avg_scores)[::-1]
+
+    return sorted_indices
 
 
-def select_top_k_patches(file_path, prefix, top_k_indices):
+def select_top_k_patches(patched_file_path, prefix, top_k_indices):
     try:
-        save_dir = os.path.dirname(file_path)
-        file_name = os.path.basename(file_path)
-        save_path = os.path.join(save_dir, f"{prefix}_{file_name}")
+        if not (os.path.exists(patched_file_path) and os.path.getsize(patched_file_path) > 0):
+            raise FileNotFoundError(f"File not found or empty: {patched_file_path}")
+
+        previous_prefix = os.path.basename(os.path.dirname(os.path.dirname(patched_file_path)))
+        class_name = os.path.basename(os.path.dirname(patched_file_path))
+        file_name = os.path.basename(patched_file_path)
+
+        dataset_dir = os.path.abspath(os.path.join(patched_file_path, '../../..'))
+        save_dir = os.path.join(dataset_dir, f'{prefix}_{previous_prefix}', class_name)
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f'{prefix}_{file_name}')
 
         if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
             return True
 
-        patched_file = np.load(file_path)
+        patched_file = np.load(patched_file_path)
         patches = patched_file['patches']
         positions = patched_file['positions']
 
@@ -200,14 +264,14 @@ def select_top_k_patches(file_path, prefix, top_k_indices):
 
         return True
     except Exception as e:
-        raise RuntimeError(f"Error processing {file_path}: {e}")
+        raise RuntimeError(f"Error processing {patched_file_path}: {e}")
 
 
-def parallel_select_top_k_patches(file_paths, prefix, top_k_indices, workers=4):
+def parallel_select_top_k_patches(patched_file_paths, prefix, top_k_indices, workers=4):
     """
     Select top K patches based on the provided indices and save them.
 
-    :param file_paths: A list of file paths to the pseudo MS images.
+    :param patched_file_paths: A list of file paths to the pseudo MS images.
     :param prefix: Prefix for the save path pattern.
     :param top_k_indices: Indices of the top K patches.
     :param workers: Number of worker processes to use.
@@ -221,8 +285,8 @@ def parallel_select_top_k_patches(file_paths, prefix, top_k_indices, workers=4):
 
         results = list(
             tqdm(
-                pool.imap_unordered(worker, file_paths),
-                total=len(file_paths),
+                pool.imap_unordered(worker, patched_file_paths),
+                total=len(patched_file_paths),
                 desc='Selecting top K patches',
             )
         )
