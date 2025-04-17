@@ -1,30 +1,205 @@
 import os
+import pickle
 import shutil
 import argparse
+import numpy as np
 
 from collections import defaultdict
 
 from utils.rasterize_ms import parallel_parse_ms
-from utils.patch_ms import parallel_calculate_patches_top_k, parallel_select_top_k_patches
+from utils.patch_ms import parallel_generate_patches, parallel_calculate_patches_scores, parallel_select_top_k_patches
 
 
-def move_dataset(dataset_dir, save_dir, dataset_files):
-    save_dir = os.path.join(dataset_dir, save_dir)
-    os.makedirs(save_dir, exist_ok=True)
+def process_binning(args):
+    """
+    Process the binning of MS files.
 
+    :param args: Arguments containing parameters for binning.
+    """
+    # Binning MS files
+    print('Binning MS Files...')
+
+    # mzML or mzXML
+    dataset_files = defaultdict(list)
+    for class_name in os.listdir(args.dataset_dir):
+        class_dir = os.path.join(args.dataset_dir, class_name)
+        if os.path.isdir(class_dir):
+            for file_name in os.listdir(class_dir):
+                if file_name.endswith(args.suffix):
+                    dataset_files[class_name].append(os.path.join(class_dir, file_name))
+
+    binned_dataset_files = defaultdict(list)
     for class_name, file_paths in dataset_files.items():
-        save_class_dir = os.path.join(save_dir, class_name)
-        os.makedirs(save_class_dir, exist_ok=True)
+        print(f"Binning class: {class_name}")
 
-        for file_path in file_paths:
-            src_path = file_path
-            dest_path = os.path.join(save_class_dir, os.path.basename(file_path))
+        parallel_parse_ms(
+            ms_file_paths=file_paths,
+            prefix=args.bin_prefix,
+            mz_min=args.mz_min,
+            mz_max=args.mz_max,
+            bin_size=args.bin_size,
+            workers=args.num_workers
+        )
 
-            shutil.move(src_path, dest_path)
+    print('Dataset Binning Process Completed.')
+    return os.path.join(args.dataset_dir, args.bin_prefix)
+
+
+def process_patching(args):
+    """
+    Process the patching of binned MS files.
+
+    :param args: Arguments containing parameters for binning.
+    """
+    # Patching binned MS files
+    print('Patching binned MS Files...')
+
+    bin_dir = os.path.join(args.dataset_dir, args.bin_prefix)
+
+    binned_dataset_files = defaultdict(list)
+    for class_name in os.listdir(bin_dir):
+        class_dir = os.path.join(bin_dir, class_name)
+        if os.path.isdir(class_dir):
+            for file_name in os.listdir(class_dir):
+                if file_name.endswith('.npz'):
+                    binned_dataset_files[class_name].append(os.path.join(class_dir, file_name))
+
+    patched_dataset_files = defaultdict(list)
+    for class_name, file_paths in binned_dataset_files.items():
+        print(f"Patching Class: {class_name}")
+
+        parallel_generate_patches(
+            binned_file_paths=file_paths,
+            prefix=args.patch_prefix,
+            method=args.select_method,
+            patch_width=args.patch_width,
+            patch_height=args.patch_height,
+            overlap_col=args.overlap_col,
+            overlap_row=args.overlap_row,
+            workers=args.num_workers
+        )
+
+    print('Dataset Patching Process Completed.')
+    patch_dir = f"{args.patch_prefix}_{args.bin_prefix}"
+    return os.path.join(args.dataset_dir, patch_dir)
+
+
+def process_sorted_indices_calculation(args):
+    """
+    Calculate the sorted indices for the patches.
+
+    :param args: Arguments containing parameters for binning.
+    """
+    # Calculate Sorted Indices
+    print('Calculating Sorted Indices...')
+
+    patch_dir = os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')
+
+    patched_dataset_files = defaultdict(list)
+    for class_name in os.listdir(patch_dir):
+        class_dir = os.path.join(patch_dir, class_name)
+        if os.path.isdir(class_dir):
+            for file_name in os.listdir(class_dir):
+                if file_name.endswith('.npz'):
+                    patched_dataset_files[class_name].append(os.path.join(class_dir, file_name))
+
+    sorted_indices_file_name = f"{args.select_method}_sorted_indices.pkl"
+    sorted_indices_file_path = os.path.join(patch_dir, sorted_indices_file_name)
+
+    recalculate = False
+    if os.path.exists(sorted_indices_file_path):
+        print(f"Sorted indices file already exists: {sorted_indices_file_path}")
+        try:
+            with open(sorted_indices_file_path, 'rb') as f:
+                sorted_indices_dict = pickle.load(f)
+            # Basic validation
+            if not isinstance(sorted_indices_dict, dict) or not all(isinstance(v, np.ndarray) for v in sorted_indices_dict.values()):
+                print("Warning: Invalid sorted indices file format. Recalculating...")
+                recalculate = True
+            elif set(sorted_indices_dict.keys()) != set(patched_dataset_files.keys()):
+                print("Warning: Class names in sorted indices file do not match the patched dataset. Recalculating...")
+                recalculate = True
+            else:
+                print("Sorted indices file is valid. Skipping calculation.")
+        except Exception as e:
+            print(f"Warning:Error loading sorted indices file: {e}. Recalculating...")
+            recalculate = True
+    else:
+        print(f"Sorted indices file does not exist: {sorted_indices_file_path}. Recalculating...")
+        recalculate = True
+
+    if recalculate:
+        print(f"Calculating patches {args.select_method} and get sorted indices...")
+        sorted_indices_dict = {}
+        for class_name, file_paths in patched_dataset_files.items():
+            print(f"Calculating {args.select_method} scores for Class: {class_name}")
+
+            sorted_indices = parallel_calculate_patches_scores(
+                patched_file_paths=file_paths,
+                method=args.select_method,
+                workers=args.num_workers
+            )
+
+            sorted_indices_dict[class_name] = sorted_indices
+
+        # Save sorted indices to a file
+        try:
+            with open(sorted_indices_file_path, 'wb') as f:
+                pickle.dump(sorted_indices_dict, f)
+        except IOError as e:
+            raise IOError(f"Error saving sorted indices file: {e}")
+
+    print(f"Sorted indices file saved: {sorted_indices_file_path}")
+
+
+def process_patch_selection(args):
+    """
+    Process the selection of top K patches from the patched MS files.
+
+    :param args: Arguments containing parameters for binning.
+    """
+    # Selecting Top K Patches
+    print('Selecting Top K Patches...')
+
+    patch_dir = os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')
+
+    # Load top_k_indices_dict from the file
+    sorted_indices_file_path = os.path.join(patch_dir, f"{args.select_method}_sorted_indices.pkl")
+    with open(sorted_indices_file_path, 'rb') as f:
+        sorted_indices_dict = pickle.load(f)
+
+    if args.top_k > len(sorted_indices_dict[list(sorted_indices_dict.keys())[0]]):
+        raise ValueError(f"Top K value {args.top_k} exceeds the number of patches available in the dataset.")
+
+    patched_dataset_files = defaultdict(list)
+    for class_name in os.listdir(patch_dir):
+        class_dir = os.path.join(patch_dir, class_name)
+        if os.path.isdir(class_dir):
+            for file_name in os.listdir(class_dir):
+                if file_name.endswith('.npz'):
+                    patched_dataset_files[class_name].append(os.path.join(class_dir, file_name))
+
+    selected_patches_dataset_files = defaultdict(list)
+
+    for class_name, file_paths in patched_dataset_files.items():
+        print(f"Selecting Top K Patches for Class: {class_name}")
+
+        top_k_indices = sorted_indices_dict[class_name][:args.top_k]
+        parallel_select_top_k_patches(
+            patched_file_paths=file_paths,
+            prefix=args.select_prefix,
+            top_k_indices=top_k_indices,
+            workers=args.num_workers
+        )
+
+    print('Dataset Top K Patches Selection Process Completed.')
+    select_dir = f'{args.select_prefix}_{args.patch_prefix}_{args.bin_prefix}'
+    return os.path.join(args.dataset_dir, select_dir)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Dataset Process Workflow')
+    parser.add_argument('--step', type=str, choices=['all', 'binning', 'patching', 'score_calculation', 'patch_selection'], default='all', help='Processing steps to execute')
     parser.add_argument('--dataset_dir', type=str, required=True, help='Path to the dataset directory')
     parser.add_argument('--suffix', type=str, default='mzML', help='File suffix to filter (e.g., .mzML, .mzXML)')
     parser.add_argument('--mz_min', type=float, required=True, help='Minimum m/z value for binning')
@@ -43,92 +218,39 @@ if __name__ == '__main__':
     if '.' not in args.suffix:
         args.suffix = '.' + args.suffix
 
-    dataset_files = defaultdict(list)
+    args.bin_prefix = f'mz_{args.mz_min}-{args.mz_max}_bin_size_{args.bin_size}'
+    args.patch_prefix = f'patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}'
+    args.select_prefix = f'top_{args.top_k}'
 
-    for class_name in os.listdir(args.dataset_dir):
-        class_dir = os.path.join(args.dataset_dir, class_name)
-        if os.path.isdir(class_dir):
-            for file_name in os.listdir(class_dir):
-                if file_name.endswith(args.suffix):
-                    dataset_files[class_name].append(os.path.join(class_dir, file_name))
+    if args.step in ['all', 'binning']:
+        bin_dir = process_binning(args)
+        print(f'Binned dataset directory: {bin_dir}')
 
-    print('Beginning Dataset Processing Workflow...')
-    print('Binning MS Files...')
-    binned_dataset_files = defaultdict(list)
-    bin_prefix = f'mz_{args.mz_min}-{args.mz_max}_bin_size_{args.bin_size}'
-    for class_name, file_paths in dataset_files.items():
-        print(f"Processing class: {class_name}")
+    if args.step in ['all', 'patching']:
+        if args.step == 'patching' and not os.path.exists(
+            os.path.join(args.dataset_dir, args.bin_prefix)
+        ):
+            raise FileNotFoundError(f'Binned dataset directory {os.path.join(args.dataset_dir, args.bin_prefix)} does not exist. Please run the binning step first.')
 
-        parallel_parse_ms(
-            ms_file_paths=file_paths,
-            prefix=bin_prefix,
-            mz_min=args.mz_min,
-            mz_max=args.mz_max,
-            bin_size=args.bin_size,
-            workers=args.num_workers
-        )
+        patch_dir = process_patching(args)
+        print(f'Patched dataset directory: {patch_dir}')
 
-        binned_dataset_files[class_name] = [
-            os.path.dirname(file_path) + '/' + bin_prefix + '_' + os.path.splitext(os.path.basename(file_path))[0] + '.npz'
-            for file_path in file_paths
-        ]
+    if args.step in ['all', 'score_calculation', 'patch_selection']:
+        if args.step == 'score_calculation' and not os.path.exists(
+            os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')
+        ):
+            raise FileNotFoundError(f'Patched dataset directory {os.path.join(args.dataset_dir, f"{args.patch_prefix}_{args.bin_prefix}")} does not exist. Please run the patching step first.')
 
-    print('Dataset Binning Process Completed.')
-    # print(binned_dataset_files)
+        process_sorted_indices_calculation(args)
+        print(f'Sorted indices calculation completed.')
 
-    print('Patching MS Files...')
-    patched_dataset_files = defaultdict(list)
-    top_k_indices_dict = {}
-    patch_prefix = f'patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}'
-    for class_name, file_paths in binned_dataset_files.items():
-        print(f"Patching Class: {class_name}")
-        top_k_indices = parallel_calculate_patches_top_k(
-            file_paths=file_paths,
-            prefix=patch_prefix,
-            method=args.select_method,
-            patch_width=args.patch_width,
-            patch_height=args.patch_height,
-            overlap_col=args.overlap_col,
-            overlap_row=args.overlap_row,
-            top_k=args.top_k,
-            workers=args.num_workers
-        )
-        top_k_indices_dict[class_name] = top_k_indices
+    if args.step in ['all', 'patch_selection']:
+        if args.step == 'patch_selection' and not os.path.exists(
+            os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')
+        ):
+            raise FileNotFoundError(f"Patched dataset directory {os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')} does not exist. Please run the patching step first.")
 
-        patched_dataset_files[class_name] = [
-            os.path.dirname(file_path) + '/' + patch_prefix + '_' + os.path.basename(file_path)
-            for file_path in file_paths
-        ]
-
-    print('Dataset Patching Process Completed.')
-    # print(patched_dataset_files)
-    # print(top_k_indices_dict)
-
-    print('Selecting Top K Patches...')
-    selected_patches_dataset_files = defaultdict(list)
-    select_prefix = f'top_{args.top_k}'
-    for class_name, file_paths in patched_dataset_files.items():
-        print(f"Selecting Top K Patches for Class: {class_name}")
-
-        top_k_indices = top_k_indices_dict[class_name]
-        parallel_select_top_k_patches(
-            file_paths=file_paths,
-            prefix=select_prefix,
-            top_k_indices=top_k_indices,
-            workers=args.num_workers
-        )
-
-        selected_patches_dataset_files[class_name] = [
-            os.path.dirname(file_path) + '/' + select_prefix + '_' + os.path.basename(file_path)
-            for file_path in file_paths
-        ]
-
-    print('Top K Patches Selection Process Completed.')
-    # print(selected_patches_dataset_files)
-
-    # Move processed files to a new directory
-    move_dataset(dataset_dir=args.dataset_dir, save_dir=bin_prefix, dataset_files=binned_dataset_files)
-    move_dataset(dataset_dir=args.dataset_dir, save_dir=f'{patch_prefix}_{bin_prefix}', dataset_files=patched_dataset_files)
-    move_dataset(dataset_dir=args.dataset_dir, save_dir=f'{select_prefix}_{patch_prefix}_{bin_prefix}', dataset_files=selected_patches_dataset_files)
+        select_dir = process_patch_selection(args)
+        print(f'Selected patches dataset directory: {select_dir}')
 
     print('Dataset Process Workflow Completed.')
