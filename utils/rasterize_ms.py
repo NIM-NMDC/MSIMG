@@ -51,9 +51,17 @@ def parse_spec(spec, mz_min, mz_max, bin_size):
 
 def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
     try:
-        save_dir = os.path.dirname(ms_file_path)
+        # /dataset_dir/{class_name}/{bin_prefix}_file_name.npz
+        class_name = os.path.basename(os.path.dirname(ms_file_path))
         file_name = os.path.splitext(os.path.basename(ms_file_path))[0]
+
+        dataset_dir = os.path.dirname(os.path.dirname(ms_file_path))
+        save_dir = os.path.join(dataset_dir, prefix, class_name)
+        os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, f'{prefix}_{file_name}.npz')
+        # save_dir = os.path.dirname(ms_file_path)
+        # file_name = os.path.splitext(os.path.basename(ms_file_path))[0]
+        # save_path = os.path.join(save_dir, f'{prefix}_{file_name}.npz')
 
         if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
             return True
