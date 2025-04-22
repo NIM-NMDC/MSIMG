@@ -30,7 +30,7 @@ def train(
 
         epoch_digits = len(str(epochs))
         epoch_str = f'{epoch + 1}'.zfill(epoch_digits)
-        train_progress_bar = tqdm(train_loader, desc=f'Epoch: {epoch_str} Training', leave=True)
+        train_progress_bar = tqdm(train_loader, desc=f'Epoch: {epoch_str} Training  ', leave=True)
         for X, _, _, y in train_progress_bar:
             X, y = X.to(device), y.to(device)
 
