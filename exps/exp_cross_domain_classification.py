@@ -72,13 +72,13 @@ def exp(args):
     )
 
     print(f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_{args.select_method}_in_channels_{args.top_k}")
-    exp_dir_name = f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_{args.select_method}_iin_channels_{args.top_k}"
+    exp_dir_name = f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_{args.select_method}_in_channels_{args.top_k}"
     exp_dir = os.path.join(args.save_dir, exp_dir_name)
 
     if not os.path.exists(exp_dir):
         os.makedirs(exp_dir)
 
-    exp_model_name = f"{args.model_name}_train_{args.dataset_info}_num_classes_{args.num_classes}_{args.select_method}_iin_channels_{args.top_k}"
+    exp_model_name = f"{args.model_name}_train_{args.dataset_info}_num_classes_{args.num_classes}_{args.select_method}_in_channels_{args.top_k}"
 
     model = build_resnet(
         model_name=args.model_name.lower(),
