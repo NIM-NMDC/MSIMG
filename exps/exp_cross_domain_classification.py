@@ -20,6 +20,13 @@ from utils.train_utils import train, test
 os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3, 4, 5, 6, 7"
 
 
+def setup_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+
+
 def _create_dataset(dataset, label_mapping, transform=None, preload=False):
     return MS2DIMGDataset(
         dataset=dataset,
@@ -64,14 +71,14 @@ def exp(args):
         num_workers=args.num_workers
     )
 
-    print(f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
-    exp_dir_name = f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
+    print(f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_{args.select_method}_in_channels_{args.top_k}")
+    exp_dir_name = f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_{args.select_method}_iin_channels_{args.top_k}"
     exp_dir = os.path.join(args.save_dir, exp_dir_name)
 
     if not os.path.exists(exp_dir):
         os.makedirs(exp_dir)
 
-    exp_model_name = f"{args.model_name}_train_{args.dataset_info}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
+    exp_model_name = f"{args.model_name}_train_{args.dataset_info}_num_classes_{args.num_classes}_{args.select_method}_iin_channels_{args.top_k}"
 
     model = build_resnet(
         model_name=args.model_name.lower(),
@@ -155,12 +162,13 @@ def main():
     parser.add_argument('--dataset_names', nargs='+', required=True, help='List of datasets to use (e.g. ST000923-C8-pos ST000923-C18-neg)')
     parser.add_argument('--label_maps', nargs='+', help='List of label maps to use (e.g. HC=0 CD=1 UC=2)')
 
-    parser.add_argument('--top_k', type=int, default=512, help='Number of patches to be selected')
+    parser.add_argument('--bin_size', type=float, default=0.01, help='Bin size for m/z binning')
     parser.add_argument('--patch_width', type=int, default=224, help='Width of the patches to be extracted')
     parser.add_argument('--patch_height', type=int, default=224, help='Height of the patches to be extracted')
     parser.add_argument('--overlap_col', type=int, default=0, help='Number of overlapping pixels between patches in the column direction')
     parser.add_argument('--overlap_row', type=int, default=0, help='Number of overlapping pixels between patches in the row direction')
-    parser.add_argument('--bin_size', type=float, default=0.01, help='Bin size for m/z binning')
+    parser.add_argument('--select_method', type=str, default='entropy', help='Method to calculate (e.g. Entropy: 1D image entropy, Mean: mean intensity, Random: random selection)')
+    parser.add_argument('--top_k', type=int, default=512, help='Number of patches to be selected')
 
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
     parser.add_argument('--epochs', type=int, default=128, help='Number of epochs')
@@ -175,6 +183,8 @@ def main():
     parser.add_argument('--random_seed', type=int, default=3407, help='Random seed for reproducibility')
 
     args = parser.parse_args()
+
+    setup_seed(args.random_seed)
 
     if args.device is None:
         args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -192,7 +202,10 @@ def main():
         os.makedirs(save_dir)
     args.save_dir = save_dir
 
-    dataset_parent_dir = f"datasets/IBD_2D/top_{args.top_k}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}_bin_size_{args.bin_size}"
+    if args.select_method != 'random':
+        dataset_parent_dir = f"datasets/IBD_2D/{args.select_method}_top_{args.top_k}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}_bin_size_{args.bin_size}"
+    else:
+        dataset_parent_dir = f"datasets/IBD_2D/random_{args.top_k}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}_bin_size_{args.bin_size}"
     dataset_dict = {
         'ST000923-C8-pos': f"{dataset_parent_dir}/ST000923-C8-pos",
         'ST000923-C18-neg': f"{dataset_parent_dir}/ST000923-C18-neg",
@@ -204,7 +217,7 @@ def main():
         'ST001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
         'ST003161': f"{dataset_parent_dir}/ST003161",
         'ST003313': f"{dataset_parent_dir}/ST003313",
-        'PXD10371': f"{dataset_parent_dir}/PXD10371",
+        'PXD010371': f"{dataset_parent_dir}/PXD010371",
         'MSV000089237': f"{dataset_parent_dir}/MSV000089237",
     }
     dataset_dirs = []
@@ -223,6 +236,8 @@ def main():
         else:
             raise ValueError(f"Dataset name {dataset_name} not found in dataset_dict.")
     args.dataset_dirs = dataset_dirs
+    for dataset_dir in dataset_dirs:
+        print(f"Dataset directory: {dataset_dir}")
 
     label_mapping = {}
     if args.label_maps:
@@ -240,7 +255,7 @@ def main():
 
     exp_dir, trained_model_name, metrics_results = exp(args)
 
-    print(f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_in_channels_{args.top_k}")
+    print(f"{args.model_name}_{args.dataset_info}_num_classes_{args.num_classes}_{args.select_method}_in_channels_{args.top_k}")
 
     for metric, result in metrics_results.items():
         print(f'{metric}: {result:.4f}')
