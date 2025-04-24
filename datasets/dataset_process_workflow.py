@@ -7,7 +7,12 @@ import numpy as np
 from collections import defaultdict
 
 from utils.rasterize_ms import parallel_parse_ms
-from utils.patch_ms import parallel_generate_patches, parallel_calculate_patches_scores, parallel_select_top_k_patches
+from utils.patch_ms import (
+    parallel_generate_patches,
+    parallel_calculate_patches_scores,
+    parallel_get_patches_numbers,
+    parallel_select_top_k_patches
+)
 
 
 def process_binning(args):
@@ -149,7 +154,78 @@ def process_sorted_indices_calculation(args):
         except IOError as e:
             raise IOError(f"Error saving sorted indices file: {e}")
 
-    print(f"Sorted indices file saved: {sorted_indices_file_path}")
+        print(f"Sorted indices file saved: {sorted_indices_file_path}")
+
+
+def process_random_indices(args):
+    """
+    Generate random indices for the patches.
+
+    :param args: Arguments containing parameters for binning.
+    """
+    # Generate Random Indices
+    print('Generating Random Indices...')
+
+    patch_dir = os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')
+
+    patched_dataset_files = defaultdict(list)
+    for class_name in os.listdir(patch_dir):
+        class_dir = os.path.join(patch_dir, class_name)
+        if os.path.isdir(class_dir):
+            for file_name in os.listdir(class_dir):
+                if file_name.endswith('.npz'):
+                    patched_dataset_files[class_name].append(os.path.join(class_dir, file_name))
+
+    random_indices_file_name = f"{args.select_method}_indices.pkl"
+    random_indices_file_path = os.path.join(patch_dir, random_indices_file_name)
+
+    get_random_indices = False
+    if os.path.exists(random_indices_file_path):
+        print(f"Random indices file already exists: {random_indices_file_path}")
+        try:
+            with open(random_indices_file_path, 'rb') as f:
+                random_indices_dict = pickle.load(f)
+            # Basic validation
+            if not isinstance(random_indices_dict, dict) or not all(
+                    isinstance(v, np.ndarray) for v in random_indices_dict.values()):
+                print("Warning: Invalid random indices file format. Get random indices...")
+                get_random_indices = True
+            elif set(random_indices_dict.keys()) != set(patched_dataset_files.keys()):
+                print("Warning: Class names in random indices file do not match the patched dataset. Get random indices...")
+                get_random_indices = True
+            else:
+                print("Random indices file is valid. Skipping get random indices.")
+        except Exception as e:
+            print(f"Warning:Error loading random indices file: {e}. Get random indices...")
+            get_random_indices = True
+    else:
+        print(f"Random indices file does not exist: {random_indices_file_path}. Get random indices...")
+        get_random_indices = True
+
+    if get_random_indices:
+        print(f"Get random indices...")
+        random_indices_dict = {}
+        for class_name, file_paths in patched_dataset_files.items():
+            print(f"Generating random indices for Class: {class_name}")
+
+            patches_numbers = parallel_get_patches_numbers(
+                patched_file_paths=file_paths,
+                workers=args.num_workers
+            )
+
+            # Get min patches number
+            min_patches_number = min(patches_numbers)
+            random_indices = np.random.permutation(np.arange(min_patches_number))
+            random_indices_dict[class_name] = random_indices
+
+        # Save sorted indices to a file
+        try:
+            with open(random_indices_file_path, 'wb') as f:
+                pickle.dump(random_indices_dict, f)
+        except IOError as e:
+            raise IOError(f"Error saving random indices file: {e}")
+
+        print(f"Random indices file saved: {random_indices_file_path}")
 
 
 def process_patch_selection(args):
@@ -164,7 +240,10 @@ def process_patch_selection(args):
     patch_dir = os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')
 
     # Load top_k_indices_dict from the file
-    sorted_indices_file_path = os.path.join(patch_dir, f"{args.select_method}_sorted_indices.pkl")
+    if args.select_method != 'random':
+        sorted_indices_file_path = os.path.join(patch_dir, f"{args.select_method}_sorted_indices.pkl")
+    else:
+        sorted_indices_file_path = os.path.join(patch_dir, f"{args.select_method}_indices.pkl")
     with open(sorted_indices_file_path, 'rb') as f:
         sorted_indices_dict = pickle.load(f)
 
@@ -205,22 +284,25 @@ if __name__ == '__main__':
     parser.add_argument('--mz_min', type=float, required=True, help='Minimum m/z value for binning')
     parser.add_argument('--mz_max', type=float, required=True, help='Maximum m/z value for binning')
     parser.add_argument('--bin_size', type=float, required=True, help='Bin size for m/z binning')
-    parser.add_argument('--select_method', type=str, default='entropy', help='Method to calculate (e.g. Entropy: 1D image entropy, Mean: mean intensity)')
+    parser.add_argument('--select_method', type=str, default='entropy', help='Method to calculate (e.g. Entropy: 1D image entropy, Mean: mean intensity, Random: random selection)')
     parser.add_argument('--patch_width', type=int, default=224, help='Width of the patches to be extracted')
     parser.add_argument('--patch_height', type=int, default=224, help='Height of the patches to be extracted')
     parser.add_argument('--overlap_col', type=int, default=0, help='Number of overlapping pixels between patches in the column direction')
     parser.add_argument('--overlap_row', type=int, default=0, help='Number of overlapping pixels between patches in the row direction')
     parser.add_argument('--top_k', type=int, default=512, help='Number of patches to be selected')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of worker processes to use')
+    parser.add_argument('--random_seed', type=int, default=3407, help='Random seed for reproducibility')
 
     args = parser.parse_args()
+
+    # np.random.seed(args.random_seed)
 
     if '.' not in args.suffix:
         args.suffix = '.' + args.suffix
 
     args.bin_prefix = f'mz_{args.mz_min}-{args.mz_max}_bin_size_{args.bin_size}'
     args.patch_prefix = f'patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}'
-    args.select_prefix = f'top_{args.top_k}'
+    args.select_prefix = f'{args.select_method}_top_{args.top_k}' if args.select_method != 'random' else f'{args.select_method}_{args.top_k}'
 
     if args.step in ['all', 'binning']:
         bin_dir = process_binning(args)
@@ -241,8 +323,12 @@ if __name__ == '__main__':
         ):
             raise FileNotFoundError(f'Patched dataset directory {os.path.join(args.dataset_dir, f"{args.patch_prefix}_{args.bin_prefix}")} does not exist. Please run the patching step first.')
 
-        process_sorted_indices_calculation(args)
-        print(f'Sorted indices calculation completed.')
+        if args.select_method != 'random':
+            process_sorted_indices_calculation(args)
+            print(f'Sorted indices calculation completed.')
+        else:
+            process_random_indices(args)
+            print(f'Random indices generation completed.')
 
     if args.step in ['all', 'patch_selection']:
         if args.step == 'patch_selection' and not os.path.exists(
