@@ -218,6 +218,39 @@ def parallel_calculate_patches_scores(patched_file_paths, method='entropy', work
     return sorted_indices
 
 
+def get_patches_number(patched_file_path):
+    try:
+        if not (os.path.exists(patched_file_path) and os.path.getsize(patched_file_path) > 0):
+            raise FileNotFoundError(f"File not found or empty: {patched_file_path}")
+
+        patched_file = np.load(patched_file_path)
+        patches = patched_file['patches']
+
+        return len(patches)
+    except Exception as e:
+        raise RuntimeError(f"Error processing {patched_file_path}: {e}")
+
+
+def parallel_get_patches_numbers(patched_file_paths, workers=4):
+    """
+    Get the number of patches in multiple patched files in parallel.
+
+    :param patched_file_paths: A list of file paths to the patched files.
+    :param workers: Number of worker processes to use.
+    :return: List of numbers of patches for each file.
+    """
+    with Pool(processes=workers) as pool:
+        results = list(
+            tqdm(
+                pool.imap_unordered(get_patches_number, patched_file_paths),
+                total=len(patched_file_paths),
+                desc='Getting number of patches',
+            )
+        )
+
+    return results
+
+
 def select_top_k_patches(patched_file_path, prefix, top_k_indices):
     try:
         if not (os.path.exists(patched_file_path) and os.path.getsize(patched_file_path) > 0):
