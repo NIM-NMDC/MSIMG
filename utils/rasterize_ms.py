@@ -117,7 +117,7 @@ def parallel_parse_ms(ms_file_paths, prefix, mz_min, mz_max, bin_size, workers=4
             tqdm(
                 pool.imap_unordered(worker, ms_file_paths),
                 total=len(ms_file_paths),
-                desc='Rasterizing ms files'
+                desc='Binning ms files'
             )
         )
 
