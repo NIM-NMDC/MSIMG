@@ -62,9 +62,8 @@ def detect_peaks(image, max_peaks=2048, min_distance=10, intensity_threshold=0.1
         image_processed,
         min_distance=min_distance,
         threshold_abs=intensity_threshold,
+        num_peaks=max_peaks,
     )
-
-    coordinates = coordinates[:max_peaks]  # Limit to max_peaks
 
     return coordinates
 
@@ -128,7 +127,7 @@ def extract_pcp_patches(image, peak_coords, patch_width=224, patch_height=224, p
     return np.array(patches), np.array(positions)
 
 
-def generate_patches(binned_file_path, prefix, patch_method, peak_detection_params, patch_params):
+def generate_patches(binned_file_path, prefix, patch_strategy, peak_detection_params, patch_params):
     try:
         if not (os.path.exists(binned_file_path) and os.path.getsize(binned_file_path) > 0):
             raise FileNotFoundError(f"File not found or empty: {binned_file_path}")
@@ -151,7 +150,7 @@ def generate_patches(binned_file_path, prefix, patch_method, peak_detection_para
         raw_image = sparse_matrix.toarray()
         raw_image = raw_image / raw_image.max()  # Normalize the image to [0, 1]
 
-        if patch_method == 'pcp':
+        if patch_strategy == 'pcp':
             # Detect peaks in the pseudo MS image
             peak_coords = detect_peaks(
                 image=raw_image,
@@ -168,9 +167,7 @@ def generate_patches(binned_file_path, prefix, patch_method, peak_detection_para
                 patch_height=patch_params.get('patch_height', 224),
                 padding_value=patch_params.get('padding_value', 0.0)
             )
-
-            np.savez_compressed(save_path, patches=patches, positions=positions)
-        elif patch_method == 'grid':
+        elif patch_strategy == 'grid':
             patches, positions = extract_grid_patches(
                 image=raw_image,
                 patch_width=patch_params.get('patch_width', 224),
@@ -178,17 +175,18 @@ def generate_patches(binned_file_path, prefix, patch_method, peak_detection_para
                 overlap_col=patch_params.get('overlap_col', 0),
                 overlap_row=patch_params.get('overlap_row', 0)
             )
+        else:
+            raise ValueError(f'Invalid patch strategy: {patch_strategy}. Choose either "grid" or "pcp".')
 
-            np.savez_compressed(save_path, patches=patches, positions=positions)
-
+        np.savez_compressed(save_path, patches=patches, positions=positions)
         return True
     except Exception as e:
         raise RuntimeError(f"Error processing {binned_file_path}: {e}")
 
 
 def parallel_generate_patches(
-        binned_file_paths, prefix, patch_method,
-        max_peaks=2048, min_distance=10, intensity_threshold=0.1, smoothing_sigma=None,
+        binned_file_paths, prefix, patch_strategy,
+        max_peaks=2048, min_distance=10, intensity_threshold=0.1, smoothing_sigma=1,
         patch_width=224, patch_height=224, overlap_col=0, overlap_row=0, padding_value=0.0, workers=4
 ):
     """
@@ -196,7 +194,7 @@ def parallel_generate_patches(
 
     :param binned_file_paths: List of file paths to the pseudo MS images.
     :param prefix: Prefix for the save path pattern.
-    :param patch_method: Method to extract patches ('grid' or 'pcp').
+    :param patch_strategy: Strategy to extract patches ('grid' or 'pcp').
     :param max_peaks: The maximum number of peaks to detect.
     :param min_distance: The minimum distance (pixels) between peaks.
     :param intensity_threshold: The minimum intensity for a peak.
@@ -208,8 +206,8 @@ def parallel_generate_patches(
     :param padding_value: Value to use for padding if patch goes out of image bounds.
     :param workers: Number of worker processes to use.
     """
-    if patch_method not in ['grid', 'pcp']:
-        raise ValueError('Invalid method. Choose either "grid" or "pcp".')
+    if patch_strategy not in ['grid', 'pcp']:
+        raise ValueError('Invalid strategy. Choose either "grid" or "pcp".')
 
     peak_detection_params = {
         'max_peaks': max_peaks,
@@ -226,11 +224,12 @@ def parallel_generate_patches(
         'padding_value': padding_value
     }
 
+    print(f"Starting parallel patch generation for {len(binned_file_paths)} files using '{patch_strategy}' strategy...")
     with Pool(processes=workers) as pool:
         worker = partial(
             generate_patches,
             prefix=prefix,
-            patch_method=patch_method,
+            patch_strategy=patch_strategy,
             peak_detection_params=peak_detection_params,
             patch_params=patch_params
         )
@@ -239,117 +238,12 @@ def parallel_generate_patches(
             tqdm(
                 pool.imap_unordered(worker, binned_file_paths),
                 total=len(binned_file_paths),
-                desc='Generating patches',
+                desc=f'Generating {patch_strategy} patches',
             )
         )
 
     success_rate = sum(results) / len(results)
-    print(f"Patching completed. Success rate: {success_rate:.2%}")
-
-
-def calculate_entropy(image):
-    """
-    Calculate the 1D entropy of an image.
-
-    :param image: Image matrix with 2D (e.g., 224x224).
-    :return: 1D Image entropy
-    """
-    assert image.min() >= 0 and image.max() <= 1, "Image values should be in the range [0, 1]"
-
-    image = np.array(image)
-    if image.sum() == 0:
-        return 0
-
-    hist, _ = np.histogram(image, bins=256, range=(0, 1))
-    P = hist / hist.sum()
-    P[P == 0] = 1  # log2(1) = 0, so we avoid log(0)
-    entropy = -np.sum(P * np.log2(P))
-    return entropy
-
-
-def calculate_mean(image):
-    """
-    Calculate the mean of an image.
-
-    :param image: Image matrix with 2D (e.g., 224x224).
-    :return: pool_int: Mean value of the image.
-    """
-    image = np.array(image)
-    mean = np.mean(image)
-    return mean
-
-
-def calculate_patches_scores(patched_file_path, method='entropy'):
-    try:
-        if not (os.path.exists(patched_file_path) and os.path.getsize(patched_file_path) > 0):
-            raise FileNotFoundError(f"File not found or empty: {patched_file_path}")
-
-        patched_file = np.load(patched_file_path)
-        patches = patched_file['patches']
-
-        if patches.size == 0:
-            raise ValueError(f"No patches found in the file: {patched_file_path}")
-
-        if method == 'entropy':
-            scores = np.array([calculate_entropy(patch) for patch in patches])
-        elif method == 'mean':
-            scores = np.array([calculate_mean(patch) for patch in patches])
-        else:
-            raise ValueError('Invalid method. Choose either "entropy" or "mean".')
-
-        return scores
-    except Exception as e:
-        raise RuntimeError(f"Error processing {patched_file_path}: {e}")
-
-
-def parallel_calculate_patches_scores(patched_file_paths, method='entropy', workers=4):
-    """
-    Calculate scores for patches in parallel and return the full sorted indices.
-
-    :param patched_file_paths: A list of file paths to the pseudo MS images.
-    :param method: Method to calculate (e.g. Entropy: 1D image entropy, Mean: mean intensity).
-    :param workers: Number of worker processes to use.
-    :return: sorted_indices: Indices of the patches sorted by score.
-    """
-    if method not in ['entropy', 'mean']:
-        raise ValueError('Invalid method. Choose either "entropy" or "mean".')
-
-    with Pool(processes=workers) as pool:
-        worker = partial(
-            calculate_patches_scores,
-            method=method
-        )
-
-        results = list(
-            tqdm(
-                pool.imap_unordered(worker, patched_file_paths),
-                total=len(patched_file_paths),
-                desc=f'Calculating patches {method} scores',
-            )
-        )
-
-    valid_results = [result for result in results if len(result) > 0]
-
-    if not valid_results:
-        raise RuntimeError("No valid scores calculated.")
-
-    """
-    When processing mass spectrometry data, the resulting matrix has a shape of (mz_bins, scans),
-    where mz_bins is fixed, but the number of scans may vary depending on how many spectra were collected in each file.
-    To ensure comparability during patch scoring and selection, we normalize the number of scores across all files.
-    Specifically, we truncate all score arrays to the same minimum length, retaining only the initial portion of patches for each file.
-    Any extra patches in files with more scans are discarded, which does not compromise the fairness or consistency of the overall evaluation.
-    """
-    min_len = min(len(scores) for scores in valid_results)
-    valid_results_trimmed = [scores[:min_len] for scores in valid_results]
-
-    patch_scores = sum(valid_results_trimmed)
-    avg_scores = patch_scores / len(valid_results_trimmed)
-
-    # Get the indices sorted by score in descending order (highest score first)
-    sorted_indices = np.argsort(avg_scores)[::-1]
-
-    return sorted_indices
+    print(f"Patch generation completed. Success rate: {success_rate:.2%}")
 
 
 def get_patches_number(patched_file_path):
@@ -383,80 +277,3 @@ def parallel_get_patches_numbers(patched_file_paths, workers=4):
         )
 
     return results
-
-
-def select_top_k_patches(patched_file_path, prefix, top_k_indices):
-    try:
-        if not (os.path.exists(patched_file_path) and os.path.getsize(patched_file_path) > 0):
-            raise FileNotFoundError(f"File not found or empty: {patched_file_path}")
-
-        previous_prefix = os.path.basename(os.path.dirname(os.path.dirname(patched_file_path)))
-        class_name = os.path.basename(os.path.dirname(patched_file_path))
-        file_name = os.path.basename(patched_file_path)
-
-        dataset_dir = os.path.abspath(os.path.join(patched_file_path, '../../..'))
-        save_dir = os.path.join(dataset_dir, f'{prefix}_{previous_prefix}', class_name)
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, f'{prefix}_{file_name}')
-
-        if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-            return True
-
-        patched_file = np.load(patched_file_path)
-        patches = patched_file['patches']
-        positions = patched_file['positions']
-
-        num_patches = len(patches)
-
-        patch_height, patch_width = patches[0].shape[:2]
-
-        zero_padding = np.zeros((patch_width, patch_height), dtype=patches[0].dtype)
-
-        selected_patches = []
-        selected_positions = []
-
-        for idx in top_k_indices:
-            if idx < num_patches:
-                selected_patches.append(patches[idx])
-                selected_positions.append(positions[idx])
-            else:
-                selected_patches.append(zero_padding)
-                selected_positions.append((-1, -1))
-
-        selected_patches = np.array(selected_patches)
-        selected_positions = np.array(selected_positions)
-        padding_mask = (selected_positions == -1).all(axis=1)
-
-        np.savez_compressed(save_path, patches=selected_patches, positions=selected_positions, padding_mask=padding_mask)
-
-        return True
-    except Exception as e:
-        raise RuntimeError(f"Error processing {patched_file_path}: {e}")
-
-
-def parallel_select_top_k_patches(patched_file_paths, prefix, top_k_indices, workers=4):
-    """
-    Select top K patches based on the provided indices and save them.
-
-    :param patched_file_paths: A list of file paths to the pseudo MS images.
-    :param prefix: Prefix for the save path pattern.
-    :param top_k_indices: Indices of the top K patches.
-    :param workers: Number of worker processes to use.
-    """
-    with Pool(processes=workers) as pool:
-        worker = partial(
-            select_top_k_patches,
-            prefix=prefix,
-            top_k_indices=top_k_indices,
-        )
-
-        results = list(
-            tqdm(
-                pool.imap_unordered(worker, patched_file_paths),
-                total=len(patched_file_paths),
-                desc='Selecting top K patches',
-            )
-        )
-
-    success_rate = sum(results) / len(results)
-    print(f"Selection completed. Success rate: {success_rate:.2%}")
