@@ -38,7 +38,7 @@ def extract_grid_patches(image, patch_width=224, patch_height=224, overlap_col=0
     return np.array(patches), np.array(positions)
 
 
-def detect_peaks(image, max_peaks=2048, min_distance=10, intensity_threshold=0.1, smoothing_sigma=None):
+def detect_peaks(image, max_peaks=0, min_distance=10, intensity_threshold=0.1, smoothing_sigma=None):
     """
     Detects peaks (local maxima) in the pseudo MS image.
 
@@ -58,12 +58,19 @@ def detect_peaks(image, max_peaks=2048, min_distance=10, intensity_threshold=0.1
 
     # Find coordinates of local maxima
     # coordinates is an array of shape (N, 2) where N is the number of peaks
-    coordinates = peak_local_max(
-        image_processed,
-        min_distance=min_distance,
-        threshold_abs=intensity_threshold,
-        num_peaks=max_peaks,
-    )
+    if max_peaks == 0:
+        coordinates = peak_local_max(
+            image_processed,
+            min_distance=min_distance,
+            threshold_abs=intensity_threshold,
+        )
+    else:
+        coordinates = peak_local_max(
+            image_processed,
+            min_distance=min_distance,
+            threshold_abs=intensity_threshold,
+            num_peaks=max_peaks,
+        )
 
     return coordinates
 
@@ -154,7 +161,7 @@ def generate_patches(binned_file_path, prefix, patch_strategy, peak_detection_pa
             # Detect peaks in the pseudo MS image
             peak_coords = detect_peaks(
                 image=raw_image,
-                max_peaks=peak_detection_params.get('max_peaks', 2048),
+                max_peaks=peak_detection_params.get('max_peaks', 0),
                 min_distance=peak_detection_params.get('min_distance', 10),
                 intensity_threshold=peak_detection_params.get('intensity_threshold', 0.1),
                 smoothing_sigma=peak_detection_params.get('smoothing_sigma', 1)
@@ -186,7 +193,7 @@ def generate_patches(binned_file_path, prefix, patch_strategy, peak_detection_pa
 
 def parallel_generate_patches(
         binned_file_paths, prefix, patch_strategy,
-        max_peaks=2048, min_distance=10, intensity_threshold=0.1, smoothing_sigma=1,
+        max_peaks=0, min_distance=10, intensity_threshold=0.1, smoothing_sigma=1,
         patch_width=224, patch_height=224, overlap_col=0, overlap_row=0, padding_value=0.0, workers=4
 ):
     """
@@ -194,7 +201,7 @@ def parallel_generate_patches(
 
     :param binned_file_paths: List of file paths to the pseudo MS images.
     :param prefix: Prefix for the save path pattern.
-    :param patch_strategy: Strategy to extract patches ('grid' or 'pcp').
+    :param patch_strategy: Strategy to extract patches ('pcp' or 'grid').
     :param max_peaks: The maximum number of peaks to detect.
     :param min_distance: The minimum distance (pixels) between peaks.
     :param intensity_threshold: The minimum intensity for a peak.
@@ -206,8 +213,8 @@ def parallel_generate_patches(
     :param padding_value: Value to use for padding if patch goes out of image bounds.
     :param workers: Number of worker processes to use.
     """
-    if patch_strategy not in ['grid', 'pcp']:
-        raise ValueError('Invalid strategy. Choose either "grid" or "pcp".')
+    if patch_strategy not in ['pcp', 'grid']:
+        raise ValueError('Invalid strategy. Choose either "pcp" or "grid".')
 
     peak_detection_params = {
         'max_peaks': max_peaks,
