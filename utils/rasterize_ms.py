@@ -59,9 +59,6 @@ def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
         save_dir = os.path.join(dataset_dir, prefix, class_name)
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, f'{prefix}_{file_name}.npz')
-        # save_dir = os.path.dirname(ms_file_path)
-        # file_name = os.path.splitext(os.path.basename(ms_file_path))[0]
-        # save_path = os.path.join(save_dir, f'{prefix}_{file_name}.npz')
 
         if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
             return True
