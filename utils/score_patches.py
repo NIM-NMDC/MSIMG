@@ -67,7 +67,9 @@ def calculate_patches_scores(patched_file_path, score_strategy='entropy'):
         _patched_file_data[score_strategy] = scores
 
         # Use temp files and rename to increase atomicity and prevent interruptions from causing file corruption,
-        temp_save_path = patched_file_path + '.tmp'
+        # temp_save_path = patched_file_path + '.tmp'
+        base, ext = os.path.split(patched_file_path)
+        temp_save_path = os.path.join(os.path.dirname(base), f"{os.path.basename(base)}_temp{ext}")
         try:
             np.savez_compressed(temp_save_path, **_patched_file_data)
             os.replace(temp_save_path, patched_file_path)
@@ -95,7 +97,7 @@ def parallel_calculate_patches_scores(patched_file_paths, score_strategy='entrop
     with Pool(processes=workers) as pool:
         worker = partial(
             calculate_patches_scores,
-            select_strategy=score_strategy,
+            score_strategy=score_strategy,
         )
 
         results = list(
