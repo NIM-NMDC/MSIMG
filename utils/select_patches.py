@@ -5,7 +5,7 @@ from functools import partial
 from multiprocessing import Pool
 
 
-def select_top_k_patches_per_class(patched_file_path, prefix, top_k_indices, padding_value=0.0):
+def select_top_k_patches_per_class(patched_file_path, prefix, sorted_indices, top_k, padding_value=0.0):
     try:
         if not (os.path.exists(patched_file_path) and os.path.getsize(patched_file_path) > 0):
             raise FileNotFoundError(f"File not found or empty: {patched_file_path}")
@@ -30,22 +30,26 @@ def select_top_k_patches_per_class(patched_file_path, prefix, top_k_indices, pad
             positions = patched_file_data['positions']
 
         num_patches = len(patches)
+        top_k_indices = sorted_indices[:top_k]
 
         padding_patch = np.full(patches[0].shape, padding_value, dtype=patches[0].dtype)
-        padding_position = (-1, -1)
+        padding_position = np.array([-1, -1], dtype=positions[0].dtype)
 
         selected_patches = []
         selected_positions = []
         padding_mask = []
         for idx in top_k_indices:
-            if idx < num_patches:
-                selected_patches.append(patches[idx])
-                selected_positions.append(positions[idx])
-                padding_mask.append(False)
-            else:
-                selected_patches.append(padding_patch)
-                selected_positions.append(padding_position)
-                padding_mask.append(True)
+            selected_patches.append(patches[idx])
+            selected_positions.append(positions[idx])
+            padding_mask.append(False)
+
+        num_selected = len(selected_patches)
+        if num_selected < top_k:
+            num_padding = top_k - num_selected
+
+            selected_patches.extend([padding_patch] * num_padding)
+            selected_positions.extend([padding_position] * num_padding)
+            padding_mask.extend([True] * num_padding)
 
         selected_patches = np.array(selected_patches)
         selected_positions = np.array(selected_positions)
@@ -58,21 +62,23 @@ def select_top_k_patches_per_class(patched_file_path, prefix, top_k_indices, pad
         raise RuntimeError(f"Error processing {patched_file_path}: {e}")
 
 
-def parallel_select_top_k_patches_per_class(patched_file_paths, prefix, selection_strategy, top_k_indices, workers=4):
+def parallel_select_top_k_patches_per_class(patched_file_paths, prefix, selection_strategy, sorted_indices, top_k, workers=4):
     """
     Select top K patches based on the provided indices and save them.
 
     :param patched_file_paths: A list of file paths to the pseudo MS images.
     :param prefix: Prefix for the save path pattern.
     :param selection_strategy: Strategy for selecting patches ('class_average' or 'per_file)
-    :param top_k_indices: Indices of the top K patches.
+    :param sorted_indices: Sorted indices of patches to select from.
+    :param top_k: Number of top patches to select.
     :param workers: Number of worker processes to use.
     """
     with Pool(processes=workers) as pool:
         worker = partial(
             select_top_k_patches_per_class,
             prefix=prefix,
-            top_k_indices=top_k_indices,
+            sorted_indices=sorted_indices,
+            top_k=top_k
         )
 
         results = list(
@@ -110,35 +116,37 @@ def select_top_k_patches_per_file(patched_file_path, prefix, score_strategy, top
 
             patches = patched_file_data['patches']
             positions = patched_file_data['positions']
-
             num_patches = len(patches)
 
             top_k_indices = np.array([], dtype=int)
+            if score_strategy not in patched_file_data or len(patched_file_data[score_strategy]) != num_patches:
+                raise ValueError(f"Missing {score_strategy} scores in {patched_file_path} or mismatch between number of patches {num_patches}. Please recalculate.")
 
-            if score_strategy == 'random':
-                top_k_indices = np.random.choice(num_patches, size=top_k, replace=False)
-            else:
-                if score_strategy not in patched_file_data or len(patched_file_data[score_strategy]) != num_patches:
-                    raise ValueError(f"Missing {score_strategy} scores in {patched_file_path} or mismatch between number of patches {num_patches}. Please recalculate.")
+            scores = patched_file_data[score_strategy]
 
-                scores = patched_file_data[score_strategy]
-                top_k_indices = np.argsort(scores)[-top_k:]
+            if len(scores) != num_patches:
+                raise ValueError(f"Mismatch between number of patches {num_patches} and scores {len(scores)} in {patched_file_path}")
+            sorted_indices = np.argsort(scores)[::-1]
+            top_k_indices = sorted_indices[:top_k]
 
         padding_patch = np.full(patches[0].shape, padding_value, dtype=patches[0].dtype)
-        padding_position = (-1, -1)
+        padding_position = np.array([-1, -1], dtype=positions[0].dtype)
 
         selected_patches = []
         selected_positions = []
         padding_mask = []
         for idx in top_k_indices:
-            if idx < num_patches:
-                selected_patches.append(patches[idx])
-                selected_positions.append(positions[idx])
-                padding_mask.append(False)
-            else:
-                selected_patches.append(padding_patch)
-                selected_positions.append(padding_position)
-                padding_mask.append(True)
+            selected_patches.append(patches[idx])
+            selected_positions.append(positions[idx])
+            padding_mask.append(False)
+
+        num_selected = len(selected_patches)
+        if num_selected < top_k:
+            num_padding = top_k - num_selected
+
+            selected_patches.extend([padding_patch] * num_padding)
+            selected_positions.extend([padding_position] * num_padding)
+            padding_mask.extend([True] * num_padding)
 
         selected_patches = np.array(selected_patches)
         selected_positions = np.array(selected_positions)

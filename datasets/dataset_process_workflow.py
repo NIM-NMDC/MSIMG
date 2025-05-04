@@ -161,12 +161,12 @@ def process_patch_selection(args):
         for class_name, file_paths in patched_dataset_files.items():
             print(f"Selecting Top K Patches for Class: {class_name}")
 
-            top_k_indices = sorted_indices_dict[class_name][:args.top_k]
             parallel_select_top_k_patches_per_class(
                 patched_file_paths=file_paths,
                 prefix=args.select_prefix,
                 selection_strategy=args.selection_strategy,
-                top_k_indices=top_k_indices,
+                sorted_indices=sorted_indices_dict[class_name],
+                top_k=args.top_k,
                 workers=args.num_workers,
             )
 
@@ -208,7 +208,7 @@ if __name__ == '__main__':
     parser.add_argument('--overlap_col', type=int, default=0, help='Number of overlapping pixels between patches in the column direction')
     parser.add_argument('--overlap_row', type=int, default=0, help='Number of overlapping pixels between patches in the row direction')
     parser.add_argument('--padding_value', type=float, default=0.0, help='Padding value for the patches')
-    parser.add_argument('--score_strategy', type=str, default='entropy', choices=['entropy', 'mean'], help='Strategy to calculate (e.g. Entropy: 1D image entropy, Mean: mean intensity, Random: random selection)')
+    parser.add_argument('--score_strategy', type=str, default='entropy', choices=['entropy', 'mean'], help='Strategy to calculate patch scores (e.g. Entropy: 1D image entropy, Mean: mean intensity, Random: random selection)')
     parser.add_argument('--selection_strategy', type=str, choices=['per_file', 'class_average'], help='Strategy for selecting patches (e.g., per_file, class_average)')
     parser.add_argument('--top_k', type=int, default=256, help='Number of patches to be selected')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of worker processes to use')
