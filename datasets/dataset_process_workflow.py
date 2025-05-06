@@ -81,6 +81,7 @@ def process_patching(args):
             min_distance=args.min_distance,
             intensity_threshold=args.intensity_threshold,
             smoothing_sigma=args.smoothing_sigma,
+            pnds_overlap=args.pnds_overlap,
             patch_width=args.patch_width,
             patch_height=args.patch_height,
             overlap_col=args.overlap_col,
@@ -199,12 +200,13 @@ if __name__ == '__main__':
     parser.add_argument('--mz_max', type=float, required=True, help='Maximum m/z value for binning')
     parser.add_argument('--bin_size', type=float, required=True, help='Bin size for m/z binning')
     parser.add_argument('--patch_strategy', type=str, required=True, choices=['pcp', 'grid'], help='Strategy to generate patches (e.g., pcp, grid)')
-    parser.add_argument('--max_peaks', type=int, default=0, help='Maximum number of peaks to be extracted')
-    parser.add_argument('--min_distance', type=int, default=64, help='Minimum distance between peaks')
+    parser.add_argument('--max_peaks', type=int, default=-1, help='Maximum number of peaks to be extracted')
+    parser.add_argument('--min_distance', type=int, default=16, help='Minimum distance between peaks (PCP-PNDS)')
     parser.add_argument('--intensity_threshold', type=float, default=0.1, help='Intensity threshold for peak extraction')
-    parser.add_argument('--smoothing_sigma', type=float, default=0.5, help='Gaussian smoothing sigma for peak extraction')
-    parser.add_argument('--patch_width', type=int, default=224, help='Width of the patches to be extracted')
-    parser.add_argument('--patch_height', type=int, default=224, help='Height of the patches to be extracted')
+    parser.add_argument('--smoothing_sigma', type=float, default=0.05, help='Gaussian smoothing sigma for peak extraction')
+    parser.add_argument('--pnds_overlap', type=float, default=0.2, help='Overlap ratio for PNDS sampling.')
+    parser.add_argument('--patch_width', type=int, default=32, help='Width of the patches to be extracted')
+    parser.add_argument('--patch_height', type=int, default=32, help='Height of the patches to be extracted')
     parser.add_argument('--overlap_col', type=int, default=0, help='Number of overlapping pixels between patches in the column direction')
     parser.add_argument('--overlap_row', type=int, default=0, help='Number of overlapping pixels between patches in the row direction')
     parser.add_argument('--padding_value', type=float, default=0.0, help='Padding value for the patches')
@@ -224,7 +226,10 @@ if __name__ == '__main__':
     args.bin_prefix = f'mz_{args.mz_min}-{args.mz_max}_bin_size_{args.bin_size}'
     if args.patch_strategy == 'pcp':
         args.selection_strategy = 'per_file'
-        args.patch_prefix = f'{args.patch_strategy}_patch_{args.patch_width}x{args.patch_height}_distance_{args.min_distance}_threshold_{args.intensity_threshold}_sigma_{args.smoothing_sigma}'
+        if args.smoothing_sigma == 0:
+            args.patch_prefix = f'{args.patch_strategy}_patch_{args.patch_width}x{args.patch_height}_pnds_{args.pnds_overlap}_threshold_{args.intensity_threshold}'
+        else:
+            args.patch_prefix = f'{args.patch_strategy}_patch_{args.patch_width}x{args.patch_height}_pnds_{args.pnds_overlap}_threshold_{args.intensity_threshold}_sigma_{args.smoothing_sigma}'
     elif args.patch_strategy == 'grid':
         args.selection_strategy = 'class_average'
         args.patch_prefix = f'{args.patch_strategy}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}'

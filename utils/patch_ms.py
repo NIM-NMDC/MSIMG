@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import itertools
 from tqdm import tqdm
 from scipy import sparse
 from functools import partial
@@ -8,7 +9,7 @@ from skimage.feature import peak_local_max
 from skimage.filters import gaussian
 
 
-def extract_grid_patches(image, patch_width=224, patch_height=224, overlap_col=0, overlap_row=0):
+def extract_grid_patches(image, patch_width, patch_height, overlap_col, overlap_row):
     """
     Extracts fixed-size patches from a pseudo MS image using a grid-based approach.
 
@@ -38,7 +39,7 @@ def extract_grid_patches(image, patch_width=224, patch_height=224, overlap_col=0
     return np.array(patches), np.array(positions)
 
 
-def detect_peaks(image, max_peaks=0, min_distance=10, intensity_threshold=0.1, smoothing_sigma=None):
+def detect_peaks(image, max_peaks, min_distance, intensity_threshold, smoothing_sigma=None):
     """
     Detects peaks (local maxima) in the pseudo MS image.
 
@@ -52,30 +53,33 @@ def detect_peaks(image, max_peaks=0, min_distance=10, intensity_threshold=0.1, s
     assert len(image.shape) == 2, "Image should be a 2D array"
 
     if smoothing_sigma is not None and smoothing_sigma > 0:
-        image_processed = gaussian(image, sigma=smoothing_sigma, preserve_range=True)
+        smoothed_image = gaussian(image, sigma=smoothing_sigma, preserve_range=True)
     else:
-        image_processed = image
+        smoothed_image = image
 
     # Find coordinates of local maxima
     # coordinates is an array of shape (N, 2) where N is the number of peaks
-    if max_peaks == 0:
-        coordinates = peak_local_max(
-            image_processed,
-            min_distance=min_distance,
-            threshold_abs=intensity_threshold,
-        )
+    coordinates = peak_local_max(
+        smoothed_image,
+        min_distance=min_distance,
+        threshold_abs=intensity_threshold,
+    )
+
+    if max_peaks == -1:
+        pass
+    elif max_peaks > 0 and coordinates.shape[0] > max_peaks:
+        # Sort by intensity and select the top max_peaks
+        intensities = smoothed_image[coordinates[:, 0], coordinates[:, 1]]
+        sorted_indices = np.argsort(intensities)[::-1][:max_peaks]
+        coordinates = coordinates[sorted_indices]
     else:
-        coordinates = peak_local_max(
-            image_processed,
-            min_distance=min_distance,
-            threshold_abs=intensity_threshold,
-            num_peaks=max_peaks,
-        )
+        # If fewer peaks than max_peaks, return all detected peaks
+        pass
 
     return coordinates
 
 
-def extract_pcp_patches(image, peak_coords, patch_width=224, patch_height=224, padding_value=0.0):
+def extract_pcp_patches(image, peak_coords, patch_width, patch_height, padding_value):
     """
     Extracts fixed-size patches centered around detected peak coordinates using PCP (Peak-Centric Patching) Algorithm.
 
@@ -155,32 +159,61 @@ def generate_patches(binned_file_path, prefix, patch_strategy, peak_detection_pa
 
         sparse_matrix = sparse.load_npz(binned_file_path)
         raw_image = sparse_matrix.toarray()
-        raw_image = raw_image / raw_image.max()  # Normalize the image to [0, 1]
+        if raw_image.sum() > 0:
+            raw_image = raw_image / raw_image.max()  # Normalize the image to [0, 1]
+        else:
+            raise ValueError(f"Image data is empty or all zeros in {binned_file_path}")
+
+        patch_width = patch_params.get('patch_width')
+        patch_height = patch_params.get('patch_height')
 
         if patch_strategy == 'pcp':
+            # print(f'Applying PCP-PNDS strategy for {binned_file_path}...')
+            # Calculate dynamic min_distance based on the patch size and pnds overlap
+            pnds_overlap = patch_params.get('pnds_overlap')
+            step_ratio = 1.0 - pnds_overlap
+            dynamic_min_distance = max(peak_detection_params.get('min_distance'), int(round(min(patch_width, patch_height) * step_ratio)))
             # Detect peaks in the pseudo MS image
-            peak_coords = detect_peaks(
+            initial_peak_coords = detect_peaks(
                 image=raw_image,
-                max_peaks=peak_detection_params.get('max_peaks', 0),
-                min_distance=peak_detection_params.get('min_distance', 10),
-                intensity_threshold=peak_detection_params.get('intensity_threshold', 0.1),
-                smoothing_sigma=peak_detection_params.get('smoothing_sigma', 1)
+                max_peaks=peak_detection_params.get('max_peaks'),
+                min_distance=dynamic_min_distance,
+                intensity_threshold=peak_detection_params.get('intensity_threshold'),
+                smoothing_sigma=peak_detection_params.get('smoothing_sigma')
             )
+
+            # Calculate neighborhood step size
+            offset_h = max(1, int(round(patch_height * step_ratio)))
+            offset_w = max(1, int(round(patch_width * step_ratio)))
+
+            # Define neighborhood offset (3x3 grid)
+            row_offsets = [-offset_h, 0, offset_h]
+            col_offsets = [-offset_w, 0, offset_w]
+            offsets = list(itertools.product(row_offsets, col_offsets))
+
+            dense_coords_list = []
+            for r, c in initial_peak_coords:
+                for dr, dc in offsets:
+                    nr, nc = r + dr, c + dc
+                    dense_coords_list.append((nr, nc))
+
+            dense_coords = np.array(dense_coords_list, dtype=int)
+            unique_dense_coords = np.unique(dense_coords, axis=0)
 
             patches, positions = extract_pcp_patches(
                 image=raw_image,
-                peak_coords=peak_coords,
-                patch_width=patch_params.get('patch_width', 224),
-                patch_height=patch_params.get('patch_height', 224),
-                padding_value=patch_params.get('padding_value', 0.0)
+                peak_coords=unique_dense_coords,
+                patch_width=patch_width,
+                patch_height=patch_height,
+                padding_value=patch_params.get('padding_value')
             )
         elif patch_strategy == 'grid':
             patches, positions = extract_grid_patches(
                 image=raw_image,
-                patch_width=patch_params.get('patch_width', 224),
-                patch_height=patch_params.get('patch_height', 224),
-                overlap_col=patch_params.get('overlap_col', 0),
-                overlap_row=patch_params.get('overlap_row', 0)
+                patch_width=patch_width,
+                patch_height=patch_height,
+                overlap_col=patch_params.get('overlap_col'),
+                overlap_row=patch_params.get('overlap_row')
             )
         else:
             raise ValueError(f'Invalid patch strategy: {patch_strategy}. Choose either "grid" or "pcp".')
@@ -193,8 +226,8 @@ def generate_patches(binned_file_path, prefix, patch_strategy, peak_detection_pa
 
 def parallel_generate_patches(
         binned_file_paths, prefix, patch_strategy,
-        max_peaks=0, min_distance=10, intensity_threshold=0.1, smoothing_sigma=1,
-        patch_width=224, patch_height=224, overlap_col=0, overlap_row=0, padding_value=0.0, workers=4
+        max_peaks, min_distance, intensity_threshold, smoothing_sigma, pnds_overlap,
+        patch_width, patch_height, overlap_col, overlap_row, padding_value, workers=4
 ):
     """
     Generate patches from pseudo MS images in parallel.
@@ -206,6 +239,7 @@ def parallel_generate_patches(
     :param min_distance: The minimum distance (pixels) between peaks.
     :param intensity_threshold: The minimum intensity for a peak.
     :param smoothing_sigma: Standard deviation for Gaussian kernel for optional smoothing. Set to None or 0 to disable smoothing.
+    :param pnds_overlap: Peak Neighborhood Dense Sampling - PNDS. The overlap value for the PCP strategy.
     :param patch_width: The width of the patches to be extracted.
     :param patch_height: The height of the patches to be extracted.
     :param overlap_col: The number of overlapping pixels between patches in the column direction.
@@ -228,6 +262,7 @@ def parallel_generate_patches(
         'patch_height': patch_height,
         'overlap_col': overlap_col,
         'overlap_row': overlap_row,
+        'pnds_overlap': pnds_overlap,
         'padding_value': padding_value
     }
 
@@ -238,7 +273,7 @@ def parallel_generate_patches(
             prefix=prefix,
             patch_strategy=patch_strategy,
             peak_detection_params=peak_detection_params,
-            patch_params=patch_params
+            patch_params=patch_params,
         )
 
         results = list(
