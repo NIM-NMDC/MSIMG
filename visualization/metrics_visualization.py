@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 from datetime import datetime
 
-from utils.metrics import compute_confusion_matrix, compute_roc_auc
+from utils.metrics import calculate_confusion_matrix, calculate_roc_auc
 
 
 def plot_metrics(save_dir, plot_title, metrics, titles):
@@ -30,7 +30,7 @@ def plot_metrics(save_dir, plot_title, metrics, titles):
 
 def plot_confusion_matrix(targets, predicts, label_mapping, plot_title, save_dir, cm=None):
     if cm is None:
-        cm, class_labels = compute_confusion_matrix(targets, predicts, label_mapping)
+        cm, class_labels = calculate_confusion_matrix(targets, predicts, label_mapping)
     else:
         class_labels = [label for label, _ in sorted(label_mapping.items(), key=lambda item: item[1])]
 
@@ -62,7 +62,7 @@ def plot_roc_auc_curve(targets, predicts, label_mapping, plot_title, save_dir):
         None
     """
     num_classes = len(label_mapping)
-    fpr, tpr, auc_scores = compute_roc_auc(targets, predicts, num_classes)
+    fpr, tpr, auc_scores = calculate_roc_auc(targets, predicts, num_classes)
     class_labels = [label for label, _ in sorted(label_mapping.items(), key=lambda item: item[1])]
 
     plt.figure(figsize=(8, 6))

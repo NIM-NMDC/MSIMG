@@ -1,6 +1,36 @@
 import torch
 from torch.utils.data import Dataset
+
 import numpy as np
+
+
+class MSDataset(Dataset):
+    """
+    Mass Spectrometry Quantitative peaks table Dataset.
+    """
+    def __init__(self, X, y, transform=False):
+        """
+        :param X: numpy array of shape (n_samples, n_features)
+        :param y: numpy array of shape (n_samples,)
+        :param transform: If True, apply standard scaling to the features.
+        """
+        self.X = X
+        self.y = y
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.y)
+
+    def __getitem__(self, idx):
+        _X = self.X[idx]
+        _y = self.y[idx]
+        if self.transform:
+            min_val = _X.min()
+            max_val = _X.max()
+            if max_val > min_val:
+                _X = (_X - min_val) / (max_val - min_val)
+        return torch.tensor(_X, dtype=torch.float32), torch.tensor(_y, dtype=torch.long)
+
 
 
 class MS2DIMGDataset(Dataset):
