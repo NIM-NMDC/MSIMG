@@ -98,6 +98,7 @@ def run_experiment(args):
             num_workers=args.num_workers
         )
 
+        model = None
         if args.model_name in ['RF', 'SVM', 'LDA']:
             if args.model_name == 'SVM':
                 model = SVC(kernel='rbf', probability=True, random_state=args.random_seed)
@@ -123,8 +124,7 @@ def run_experiment(args):
 
             if args.use_multi_gpu and torch.cuda.device_count() > 1:
                 print(f'Using {torch.cuda.device_count()} GPUs for training.')
-                print(
-                    "DataParallel typically expects model on primary GPU (cuda:0). Moving model to cuda:0 before DataParallel.")
+                print("DataParallel typically expects model on primary GPU (cuda:0). Moving model to cuda:0 before DataParallel.")
                 model = model.to(args.device)
                 model = nn.DataParallel(model)  # Wrap the models with DataParallel for multi-GPU support
             else:
@@ -223,7 +223,6 @@ def main():
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
     parser.add_argument('--epochs', type=int, default=64, help='Number of epochs')
     parser.add_argument('--device', type=str, default=None, help='Device to use')
-    parser.add_argument('--preload', action='store_true', help='Preload dataset into memory')
     parser.add_argument('--num_workers', type=int, default=32, help='Number of workers for DataLoader')
     parser.add_argument('--pretrained', action='store_true', help='Use pretrained model')
     parser.add_argument('--use_multi_gpu', action='store_true', help='Use multiple GPUs')
@@ -239,18 +238,13 @@ def main():
     if args.use_multi_gpu:
         args.device = torch.device("cuda:0")
 
-    if args.preload:
-        args.num_workers = 0  # Set to 0 to avoid issues with DataLoader
-
-    set_seeds(args.random_seed)
-
     # Set save directory
     save_dir = os.path.join(args.root_dir, args.save_dir)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     args.save_dir = save_dir
 
-    dataset_parent_dir = 'datasets/Quantitative_Table'
+    dataset_parent_dir = 'datasets/MS-Quantitative-Table'
     dataset_dict = {
         'ST000923-C8-pos': f"{dataset_parent_dir}/ST000923-C8-pos",
         # 'ST000923-C18-neg': f"{dataset_parent_dir}/ST000923-C18-neg",

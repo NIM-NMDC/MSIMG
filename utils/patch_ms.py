@@ -2,22 +2,165 @@ import os
 import numpy as np
 import itertools
 from tqdm import tqdm
-from scipy import sparse
+from scipy import sparse, ndimage
 from functools import partial
 from multiprocessing import Pool
-from skimage.feature import peak_local_max
-from skimage.filters import gaussian
 
 
-def extract_grid_patches(image, patch_width, patch_height, overlap_col, overlap_row):
+def get_normalized_image(raw_image):
+    """
+    Normalize the raw image to the range [0, 1].
+
+    :param raw_image: The raw pseudo MS image (2D array).
+    :return: Normalized image (2D array).
+    """
+    non_zero_pixels = raw_image[raw_image > 0]
+    if non_zero_pixels.size == 0:
+        raise ValueError("No non-zero pixels found in the image.")
+
+    v_max = np.percentile(non_zero_pixels, 99.9)
+    v_min = 0
+    if v_max <= v_min:
+        raise ValueError(f"Invalid value range: v_min={v_min}, v_max={v_max}")
+
+    normalized_image = (raw_image - v_min) / (v_max - v_min)
+    normalized_image = np.clip(normalized_image, 0, 1)
+
+    return normalized_image
+
+
+def calculate_local_variance_map(image, window_size):
+    """
+    Use uniform filter to efficiently calculate local variance maps.
+    """
+    mean_sq = ndimage.uniform_filter(image ** 2, size=window_size, mode='reflect')
+    mean_val = ndimage.uniform_filter(image, size=window_size, mode='reflect')
+    sq_mean = mean_val ** 2
+    variance_map = mean_sq - sq_mean
+    variance_map = np.maximum(variance_map, 0)
+    return variance_map
+
+
+def information_content_sampling(information_map, detection_window_height, detection_window_width, step_height, step_width, detection_metric_type='mean', threshold=0.05):
+    """
+    Perform Information Content Sampling (ICS) on the information map to select patches.
+    Using a sliding window on the information map to find the center point of the area where the information content is above the threshold.
+
+    :param information_map: 2D array representing the information content of the image.
+    :param detection_window_height: Height of the sampling window.
+    :param detection_window_width: Width of the sampling window.
+    :param step_height: Vertical step size for sliding the window.
+    :param step_width: Horizontal step size for sliding the window.
+    :param detection_metric_type: Metric to use for sampling ('mean', 'max', 'min').
+    :param threshold: Threshold value for selecting patches.
+    :return: List of coordinates where patches are sampled.
+    """
+    assert detection_metric_type in ['mean', 'max', 'min'], "metric_type must be one of ['mean', 'max', 'min']"
+
+    H, W = information_map.shape
+    anchor_point_coords = []
+
+    for row_start in range(0, H - detection_window_height + 1, step_height):
+        for col_start in range(0, W - detection_window_width + 1, step_width):
+            row_end = row_start + detection_window_height
+            col_end = col_start + detection_window_width
+
+            window_on_info_map = information_map[row_start:row_end, col_start:col_end]
+
+            metric_value = 0
+            if detection_metric_type == 'mean':
+                metric_value = np.mean(window_on_info_map)
+            elif detection_metric_type == 'max':
+                metric_value = np.max(window_on_info_map)
+            elif detection_metric_type == 'min':
+                metric_value = np.min(window_on_info_map)
+            else:
+                raise ValueError(f"Unsupported metric type: {detection_metric_type}. Choose 'mean' or 'max'.")
+
+            if metric_value >= threshold:
+                row_center = row_start + detection_window_height // 2
+                col_center = col_start + detection_window_width // 2
+                anchor_point_coords.append((row_center, col_center))
+
+    return np.array(anchor_point_coords, dtype=int)
+
+
+def get_anchor_points(binned_file_path, patch_params):
+    """
+    Extracts anchor points from a binned file based on the patch parameters.
+    """
+    try:
+        if not os.path.exists(binned_file_path):
+            raise FileNotFoundError(f"File not found: {binned_file_path}")
+
+        sparse_matrix = sparse.load_npz(binned_file_path)
+        raw_image = sparse_matrix.toarray()
+        normalized_image = get_normalized_image(raw_image)
+
+        ics_window_size = patch_params.get('ics_window_size', 16)
+        information_map = calculate_local_variance_map(image=normalized_image, window_size=(ics_window_size, ics_window_size))
+
+        map_min, map_max = np.min(information_map), np.max(information_map)
+        if map_max > map_min:
+            normalized_information_map = (information_map - map_min) / (map_max - map_min)
+        else:
+            raise ValueError(f"Information map is constant in {binned_file_path}")
+
+        detection_window_height = patch_params.get('detection_window_height', 32)
+        detection_window_width = patch_params.get('detection_window_width', 32)
+        step_height = patch_params.get('step_height')
+        step_width = patch_params.get('step_width')
+        if step_height == 0 or step_height < 0:
+            step_height = detection_window_height
+        if step_width == 0 or step_width < 0:
+            step_width = detection_window_width
+
+        anchor_points = information_content_sampling(
+            information_map=normalized_information_map,
+            detection_window_height=detection_window_height,
+            detection_window_width=detection_window_width,
+            step_height=step_height,
+            step_width=step_width,
+            detection_metric_type=patch_params.get('detection_metric_type', 'mean'),
+            threshold=patch_params.get('threshold', 0.05)
+        )
+
+        return anchor_points
+    except Exception as e:
+        raise RuntimeError(f"Error processing {binned_file_path}: {e}")
+
+
+def parallel_get_anchor_points(binned_file_paths, patch_params, workers=4):
+    """
+    Extract anchor points from multiple binned files in parallel.
+    """
+    print(f"Starting parallel anchor point extraction for {len(binned_file_paths)} files...")
+    with Pool(processes=workers) as pool:
+        worker = partial(
+            get_anchor_points,
+            patch_params=patch_params
+        )
+
+        results = list(
+            tqdm(
+                pool.imap_unordered(worker, binned_file_paths),
+                total=len(binned_file_paths),
+                desc='Calculating Information Content Sampling (ICS) anchor points'
+            )
+        )
+
+    return results
+
+
+def grid_patching(image, patch_height, patch_width, overlap_row, overlap_col):
     """
     Extracts fixed-size patches from a pseudo MS image using a grid-based approach.
 
     :param image: The pseudo MS image to extract patches from (2D array).
     :param patch_width: The width of the patches to be extracted.
     :param patch_height: The height of the patches to be extracted.
-    :param overlap_col: The number of overlapping pixels between patches in the column direction.
     :param overlap_row: The number of overlapping pixels between patches in the row direction.
+    :param overlap_col: The number of overlapping pixels between patches in the column direction.
     :return: patches (np.ndarray): Extracted patches of shape (num_patches, patch_height, patch_width).
     :return: positions (np.ndarray): Corresponding positions of patches as (num_patches, 2) where each row is (row_idx, col_idx).
     """
@@ -39,54 +182,14 @@ def extract_grid_patches(image, patch_width, patch_height, overlap_col, overlap_
     return np.array(patches), np.array(positions)
 
 
-def detect_peaks(image, max_peaks, min_distance, intensity_threshold, smoothing_sigma=None):
+def point_patching(image, point_coords, patch_height, patch_width, padding_value):
     """
-    Detects peaks (local maxima) in the pseudo MS image.
-
-    :param image: The pseudo MS image to detect peaks in (2D array, normalized).
-    :param max_peaks: The maximum number of peaks to detect.
-    :param min_distance: The minimum distance (pixels) between peaks.
-    :param intensity_threshold: The minimum intensity for a peak.
-    :param smoothing_sigma: Standard deviation for Gaussian kernel for optional smoothing. Set to None or 0 to disable smoothing.
-    :return: np.ndarray: Coordinates of detected peaks as (num_peaks, 2) where each row is (row_idx, col_idx).
-    """
-    assert len(image.shape) == 2, "Image should be a 2D array"
-
-    if smoothing_sigma is not None and smoothing_sigma > 0:
-        smoothed_image = gaussian(image, sigma=smoothing_sigma, preserve_range=True)
-    else:
-        smoothed_image = image
-
-    # Find coordinates of local maxima
-    # coordinates is an array of shape (N, 2) where N is the number of peaks
-    coordinates = peak_local_max(
-        smoothed_image,
-        min_distance=min_distance,
-        threshold_abs=intensity_threshold,
-    )
-
-    if max_peaks == -1:
-        pass
-    elif max_peaks > 0 and coordinates.shape[0] > max_peaks:
-        # Sort by intensity and select the top max_peaks
-        intensities = smoothed_image[coordinates[:, 0], coordinates[:, 1]]
-        sorted_indices = np.argsort(intensities)[::-1][:max_peaks]
-        coordinates = coordinates[sorted_indices]
-    else:
-        # If fewer peaks than max_peaks, return all detected peaks
-        pass
-
-    return coordinates
-
-
-def extract_pcp_patches(image, peak_coords, patch_width, patch_height, padding_value):
-    """
-    Extracts fixed-size patches centered around detected peak coordinates using PCP (Peak-Centric Patching) Algorithm.
+    Extracts fixed-size patches centered around detected point coordinates.
 
     :param image: The pseudo MS image to extract patches from (2D array, normalized).
-    :param peak_coords: Coordinates of detected peaks as (num_peaks, 2) from detect_peaks function.
-    :param patch_width: The width of the patches to be extracted.
+    :param point_coords: Coordinates of detected peaks as (num_peaks, 2) from detect_peaks function.
     :param patch_height: The height of the patches to be extracted.
+    :param patch_width: The width of the patches to be extracted.
     :param padding_value: Value to use for padding if patch goes out of image bounds.
     :return patches (np.ndarray): Extracted patches of shape (num_peaks, patch_height, patch_width).
     :return positions (np.ndarray): Corresponding *center* positions (peak coordinates) of patches as (num_peaks, 2) where each row is (peak_row_idx, peak_col_idx).
@@ -96,7 +199,7 @@ def extract_pcp_patches(image, peak_coords, patch_width, patch_height, padding_v
     patches = []
     positions = []  # Store the *center* coordinates (peak coordinates)
 
-    if peak_coords.shape[0] == 0:
+    if point_coords.shape[0] == 0:
         raise ValueError("No peaks detected in the image.")
 
     h_half_floor = patch_height // 2
@@ -105,40 +208,40 @@ def extract_pcp_patches(image, peak_coords, patch_width, patch_height, padding_v
     h_half_ceil = patch_height - h_half_floor
     w_half_ceil = patch_width - w_half_floor
 
-    for mz_idx, scan_idx in peak_coords:
+    for row_center, col_center in point_coords:
         # Calculate patch boundaries centered at the peak
-        mz_start = mz_idx - h_half_floor
-        mz_end = mz_idx + h_half_ceil
-        scan_start = scan_idx - w_half_floor
-        scan_end = scan_idx + w_half_ceil
+        row_start = row_center - h_half_floor
+        row_end = row_center + h_half_ceil
+        col_start = col_center - w_half_floor
+        col_end = col_center + w_half_ceil
 
         # Create an empty patch with padding value
         patch = np.full((patch_height, patch_width), padding_value, dtype=image.dtype)
 
         # Determine the valid intersection range in the original image
-        mz_valid_start = max(0, mz_start)
-        mz_valid_end = min(H, mz_end)
-        scan_valid_start = max(0, scan_start)
-        scan_valid_end = min(W, scan_end)
+        img_row_valid_start = max(0, row_start)
+        img_row_valid_end = min(H, row_end)
+        img_col_valid_start = max(0, col_start)
+        img_col_valid_end = min(W, col_end)
 
         # Determine where to paste the valid data in the patch
-        paste_mz_start = mz_valid_start - mz_start
-        paste_mz_end = mz_valid_end - mz_start
-        paste_scan_start = scan_valid_start - scan_start
-        paste_scan_end = scan_valid_end - scan_start
+        patch_row_start = img_row_valid_start - row_start
+        patch_row_end = img_row_valid_end - row_start
+        patch_col_start = img_col_valid_start - col_start
+        patch_col_end = img_col_valid_end - col_start
 
         # Copy the valid data if there is an intersection
-        if mz_valid_start < mz_valid_end and scan_valid_start < scan_valid_end:
-            patch[paste_mz_start:paste_mz_end, paste_scan_start:paste_scan_end] = \
-                image[mz_valid_start:mz_valid_end, scan_valid_start:scan_valid_end]
+        if img_row_valid_start < img_row_valid_end and img_col_valid_start < img_col_valid_end:
+            patch[patch_row_start:patch_row_end, patch_col_start:patch_col_end] = \
+                image[img_row_valid_start:img_row_valid_end, img_col_valid_start:img_col_valid_end]
 
-        patches.append(patch)
-        positions.append((mz_idx, scan_idx))
+            patches.append(patch)
+            positions.append((row_center, col_center))  # Store the center coordinates
 
     return np.array(patches), np.array(positions)
 
 
-def generate_patches(binned_file_path, prefix, patch_strategy, peak_detection_params, patch_params):
+def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, global_anchor_points=None):
     try:
         if not (os.path.exists(binned_file_path) and os.path.getsize(binned_file_path) > 0):
             raise FileNotFoundError(f"File not found or empty: {binned_file_path}")
@@ -159,62 +262,55 @@ def generate_patches(binned_file_path, prefix, patch_strategy, peak_detection_pa
 
         sparse_matrix = sparse.load_npz(binned_file_path)
         raw_image = sparse_matrix.toarray()
-        if raw_image.sum() > 0:
-            raw_image = raw_image / raw_image.max()  # Normalize the image to [0, 1]
-        else:
-            raise ValueError(f"Image data is empty or all zeros in {binned_file_path}")
+        normalized_image = get_normalized_image(raw_image)
 
-        patch_width = patch_params.get('patch_width')
-        patch_height = patch_params.get('patch_height')
-
-        if patch_strategy == 'pcp':
-            # print(f'Applying PCP-PNDS strategy for {binned_file_path}...')
-            # Calculate dynamic min_distance based on the patch size and pnds overlap
-            pnds_overlap = patch_params.get('pnds_overlap')
-            step_ratio = 1.0 - pnds_overlap
-            dynamic_min_distance = max(peak_detection_params.get('min_distance'), int(round(min(patch_width, patch_height) * step_ratio)))
-            # Detect peaks in the pseudo MS image
-            initial_peak_coords = detect_peaks(
-                image=raw_image,
-                max_peaks=peak_detection_params.get('max_peaks'),
-                min_distance=dynamic_min_distance,
-                intensity_threshold=peak_detection_params.get('intensity_threshold'),
-                smoothing_sigma=peak_detection_params.get('smoothing_sigma')
+        if patch_strategy == 'grid':
+            patches, positions = grid_patching(
+                image=normalized_image,
+                patch_height=patch_params.get('patch_height'),
+                patch_width=patch_params.get('patch_width'),
+                overlap_row=patch_params.get('overlap_row'),
+                overlap_col=patch_params.get('overlap_col')
             )
+        elif patch_strategy == 'ics':
+            # ics_window_size = patch_params.get('ics_window_size', 16)
+            #
+            # information_map = calculate_local_variance_map(image=normalized_image, window_size=(ics_window_size, ics_window_size))
+            # map_min, map_max = np.min(information_map), np.max(information_map)
+            # if map_max > map_min:
+            #     normalized_information_map = (information_map - map_min) / (map_max - map_min)
+            # else:
+            #     raise ValueError(f"Information map is constant in {binned_file_path}")
+            #
+            # detection_window_height = patch_params.get('detection_window_height', 32)
+            # detection_window_width = patch_params.get('detection_window_width', 32)
+            # step_height = patch_params.get('step_height')
+            # step_width = patch_params.get('step_width')
+            # if step_height == 0 or step_height < 0:
+            #     step_height = detection_window_height
+            # if step_width == 0 or step_width < 0:
+            #     step_width = detection_window_width
+            #
+            # anchor_points = information_content_sampling(
+            #     information_map=normalized_information_map,
+            #     detection_window_height=detection_window_height,
+            #     detection_window_width=detection_window_width,
+            #     step_height=step_height,
+            #     step_width=step_width,
+            #     detection_metric_type=patch_params.get('detection_metric_type', 'mean'),
+            #     threshold=patch_params.get('threshold', 0.3)
+            # )
 
-            # Calculate neighborhood step size
-            offset_h = max(1, int(round(patch_height * step_ratio)))
-            offset_w = max(1, int(round(patch_width * step_ratio)))
-
-            # Define neighborhood offset (3x3 grid)
-            row_offsets = [-offset_h, 0, offset_h]
-            col_offsets = [-offset_w, 0, offset_w]
-            offsets = list(itertools.product(row_offsets, col_offsets))
-
-            dense_coords_list = []
-            for r, c in initial_peak_coords:
-                for dr, dc in offsets:
-                    nr, nc = r + dr, c + dc
-                    dense_coords_list.append((nr, nc))
-
-            dense_coords = np.array(dense_coords_list, dtype=int)
-            unique_dense_coords = np.unique(dense_coords, axis=0)
-
-            patches, positions = extract_pcp_patches(
-                image=raw_image,
-                peak_coords=unique_dense_coords,
-                patch_width=patch_width,
-                patch_height=patch_height,
-                padding_value=patch_params.get('padding_value')
-            )
-        elif patch_strategy == 'grid':
-            patches, positions = extract_grid_patches(
-                image=raw_image,
-                patch_width=patch_width,
-                patch_height=patch_height,
-                overlap_col=patch_params.get('overlap_col'),
-                overlap_row=patch_params.get('overlap_row')
-            )
+            if global_anchor_points is not None:
+                patches, positions = point_patching(
+                    image=normalized_image,
+                    point_coords=global_anchor_points,
+                    patch_height=patch_params.get('patch_height'),
+                    patch_width=patch_params.get('patch_width'),
+                    padding_value=patch_params.get('padding_value')
+                )
+            else:
+                raise ValueError("Global anchor points must be provided for ICS patching.")
         else:
             raise ValueError(f'Invalid patch strategy: {patch_strategy}. Choose either "grid" or "pcp".')
 
@@ -225,46 +321,20 @@ def generate_patches(binned_file_path, prefix, patch_strategy, peak_detection_pa
 
 
 def parallel_generate_patches(
-        binned_file_paths, prefix, patch_strategy,
-        max_peaks, min_distance, intensity_threshold, smoothing_sigma, pnds_overlap,
-        patch_width, patch_height, overlap_col, overlap_row, padding_value, workers=4
+        binned_file_paths, prefix, patch_strategy, patch_params, global_anchor_points=None, workers=4
 ):
     """
     Generate patches from pseudo MS images in parallel.
 
     :param binned_file_paths: List of file paths to the pseudo MS images.
     :param prefix: Prefix for the save path pattern.
-    :param patch_strategy: Strategy to extract patches ('pcp' or 'grid').
-    :param max_peaks: The maximum number of peaks to detect.
-    :param min_distance: The minimum distance (pixels) between peaks.
-    :param intensity_threshold: The minimum intensity for a peak.
-    :param smoothing_sigma: Standard deviation for Gaussian kernel for optional smoothing. Set to None or 0 to disable smoothing.
-    :param pnds_overlap: Peak Neighborhood Dense Sampling - PNDS. The overlap value for the PCP strategy.
-    :param patch_width: The width of the patches to be extracted.
-    :param patch_height: The height of the patches to be extracted.
-    :param overlap_col: The number of overlapping pixels between patches in the column direction.
-    :param overlap_row: The number of overlapping pixels between patches in the row direction.
-    :param padding_value: Value to use for padding if patch goes out of image bounds.
+    :param patch_strategy: Strategy to extract patches ('grid' or 'ics').
+    :param patch_params: Dictionary containing parameters for patch generation.
+    :param global_anchor_points: Global anchor points for ICS patching, if applicable.
     :param workers: Number of worker processes to use.
     """
-    if patch_strategy not in ['pcp', 'grid']:
-        raise ValueError('Invalid strategy. Choose either "pcp" or "grid".')
-
-    peak_detection_params = {
-        'max_peaks': max_peaks,
-        'min_distance': min_distance,
-        'intensity_threshold': intensity_threshold,
-        'smoothing_sigma': smoothing_sigma
-    }
-
-    patch_params = {
-        'patch_width': patch_width,
-        'patch_height': patch_height,
-        'overlap_col': overlap_col,
-        'overlap_row': overlap_row,
-        'pnds_overlap': pnds_overlap,
-        'padding_value': padding_value
-    }
+    if patch_strategy not in ['grid', 'ics']:
+        raise ValueError('Invalid strategy. Choose either "grid" or "ics".')
 
     print(f"Starting parallel patch generation for {len(binned_file_paths)} files using '{patch_strategy}' strategy...")
     with Pool(processes=workers) as pool:
@@ -272,8 +342,8 @@ def parallel_generate_patches(
             generate_patches,
             prefix=prefix,
             patch_strategy=patch_strategy,
-            peak_detection_params=peak_detection_params,
             patch_params=patch_params,
+            global_anchor_points=global_anchor_points
         )
 
         results = list(
@@ -286,36 +356,3 @@ def parallel_generate_patches(
 
     success_rate = sum(results) / len(results)
     print(f"Patch generation completed. Success rate: {success_rate:.2%}")
-
-
-def get_patches_number(patched_file_path):
-    try:
-        if not (os.path.exists(patched_file_path) and os.path.getsize(patched_file_path) > 0):
-            raise FileNotFoundError(f"File not found or empty: {patched_file_path}")
-
-        patched_file = np.load(patched_file_path)
-        patches = patched_file['patches']
-
-        return len(patches)
-    except Exception as e:
-        raise RuntimeError(f"Error processing {patched_file_path}: {e}")
-
-
-def parallel_get_patches_numbers(patched_file_paths, workers=4):
-    """
-    Get the number of patches in multiple patched files in parallel.
-
-    :param patched_file_paths: A list of file paths to the patched files.
-    :param workers: Number of worker processes to use.
-    :return: List of numbers of patches for each file.
-    """
-    with Pool(processes=workers) as pool:
-        results = list(
-            tqdm(
-                pool.imap_unordered(get_patches_number, patched_file_paths),
-                total=len(patched_file_paths),
-                desc='Getting number of patches',
-            )
-        )
-
-    return results

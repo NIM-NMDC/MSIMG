@@ -32,132 +32,46 @@ class MSDataset(Dataset):
         return torch.tensor(_X, dtype=torch.float32), torch.tensor(_y, dtype=torch.long)
 
 
-
-class MS2DIMGDataset(Dataset):
+class MSIMGDataset(Dataset):
     """
-    MS 2D Image Dataset.
-
-    Dataset Structure:\n
-    dataset_dir/
-        - Class A/ [IMGs]
-        - Class B/ [IMGs]
-
-    :param dataset: List of tuples containing (class_name, file_path).
-    :param label_mapping: Mapping from class names to labels.
-    :param transform: Transform to be applied to the images.
-    :param preload: If True, load all data into memory.
+    Mass Spectrometry 2D Image Dataset.
     """
-    def __init__(self, dataset, label_mapping, transform=None, preload=False):
-        self.dataset = dataset
-        self.label_mapping = label_mapping
+    def __init__(self, patches_list, positions_list, padding_mask_list, labels, return_positions=False, transform=None):
+        """
+        :param patches_list: List of patches (numpy arrays).
+        :param positions_list: List of positions (numpy arrays).
+        :param padding_mask_list: List of padding masks (numpy arrays).
+        :param labels: List of labels (numpy arrays).
+        :param return_positions: If True, return positions along with patches and labels.
+        :param transform: Optional transform to be applied on the patches.
+        """
+        self.patches_list = patches_list
+        self.positions_list = positions_list
+        self.padding_mask_list = padding_mask_list
+        self.labels = labels
+        self.return_positions = return_positions
         self.transform = transform
 
-        if preload:
-            self.samples = []
-            for sample_info in dataset:
-                sample = np.load(sample_info['file_path'])
-                patches = torch.tensor(sample['patches'], dtype=torch.float32)
-                positions = torch.tensor(sample['positions'], dtype=torch.float32)
-                padding_mask = torch.tensor(sample['padding_mask'], dtype=torch.bool)
-                label = torch.tensor(self.label_mapping[sample_info['class_name']], dtype=torch.long)
-
-                if self.transform:
-                    patches = self.transform(patches)
-
-                self.samples.append((patches, positions, padding_mask, label))
+    def __len__(self):
+        return len(self.labels)
 
     def __getitem__(self, idx):
-        if hasattr(self, 'samples'):
-            return self.samples[idx]
+        patches = self.patches_list[idx]
+        label = self.labels[idx]
+
+        if self.transform:
+            patches = self.transform(patches)
+
+        if self.return_positions:
+            positions = self.positions_list[idx]
+            padding_mask = self.padding_mask_list[idx]
+            return torch.tensor(patches, dtype=torch.float32), \
+                   torch.tensor(positions, dtype=torch.float32), \
+                   torch.tensor(padding_mask, dtype=torch.bool), \
+                   torch.tensor(label, dtype=torch.long)
         else:
-            sample = np.load(self.dataset[idx]['file_path'])
-            patches = torch.tensor(sample['patches'], dtype=torch.float32)
-            positions = torch.tensor(sample['positions'], dtype=torch.float32)
-            padding_mask = torch.tensor(sample['padding_mask'], dtype=torch.bool)
-            label = torch.tensor(self.label_mapping[self.dataset[idx]['class_name']], dtype=torch.long)
+            return torch.tensor(patches, dtype=torch.float32), \
+                   torch.tensor(label, dtype=torch.long)
 
-            if self.transform:
-                patches = self.transform(patches)
-
-            return patches, positions, padding_mask, label
-
-    def __len__(self):
-        return len(self.dataset)
-
-
-class MS2DIMGDomainDataset(Dataset):
-    """
-    MS 2D Image Multiple Domain Dataset.
-
-    Dataset Structure:\n
-    dataset_dir/
-        Domain A/
-            - Class A/ [IMGs]
-            - Class B/ [IMGs]
-        Domain B/
-            - Class A/ [IMGs]
-            - Class B/ [IMGs]
-
-    :param dataset: List of tuples containing (domain_name, class_name, file_path).
-    :param label_mapping: Mapping from class names to labels.
-    :param transform: Transform to be applied to the images.
-    :param task: Task type. If 'domain_discrepancy_validation', use the domain as the label.
-    :param preload: If True, load all data into memory.
-    """
-    def __init__(self, dataset, label_mapping, transform=None, task=None, preload=False):
-        self.dataset = dataset
-        self.label_mapping = label_mapping
-        self.transform = transform
-        self.task = task
-
-        if preload:
-            self.samples = []
-            for sample_info in dataset:
-                sample = np.load(sample_info['file_path'])
-                patches = torch.tensor(sample['patches'], dtype=torch.float32)
-                positions = torch.tensor(sample['positions'], dtype=torch.float32)
-                padding_mask = torch.tensor(sample['padding_mask'], dtype=torch.bool)
-                label = self._get_label(
-                    domain_name=sample_info['domain_name'],
-                    class_name=sample_info['class_name'],
-                    label_mapping=label_mapping
-                )
-                label = torch.tensor(label, dtype=torch.long)
-
-                if self.transform:
-                    patches = self.transform(patches)
-
-                self.samples.append((patches, positions, padding_mask, label))
-
-    def _get_label(self, domain_name, class_name, label_mapping):
-        if self.task == 'domain_discrepancy_validation':
-            return label_mapping[domain_name]
-        elif self.task == 'classification':
-            return label_mapping[class_name]
-        else:
-            raise ValueError(f"Unknown task: {self.task}")
-
-    def __getitem__(self, idx):
-        if hasattr(self, 'samples'):
-            return self.samples[idx]
-        else:
-            sample = np.load(self.dataset[idx]['file_path'])
-            patches = torch.tensor(sample['patches'], dtype=torch.float32)
-            positions = torch.tensor(sample['positions'], dtype=torch.float32)
-            padding_mask = torch.tensor(sample['padding_mask'], dtype=torch.long)
-            label = self._get_label(
-                domain_name=self.dataset[idx]['domain_name'],
-                class_name=self.dataset[idx]['class_name'],
-                label_mapping=self.label_mapping
-            )
-            label = torch.tensor(label, dtype=torch.long)
-
-            if self.transform:
-                patches = self.transform(patches)
-
-            return patches, positions, padding_mask, label
-
-    def __len__(self):
-        return len(self.dataset)
 
 

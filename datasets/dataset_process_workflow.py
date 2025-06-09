@@ -1,4 +1,5 @@
 import os
+import yaml
 import pickle
 import shutil
 import argparse
@@ -7,9 +8,33 @@ import numpy as np
 from collections import defaultdict
 
 from utils.rasterize_ms import parallel_parse_ms
-from utils.patch_ms import parallel_generate_patches
+from utils.patch_ms import parallel_get_anchor_points, parallel_generate_patches
 from utils.score_patches import parallel_calculate_patches_scores, calculate_average_scores_and_indices
-from utils.select_patches import parallel_select_top_k_patches_per_file, parallel_select_top_k_patches_per_class
+from utils.select_patches import parallel_select_top_k_patches
+
+
+def load_params_from_yaml(file_path, key=None):
+    """
+    Load parameters from a YAML file.
+
+    :param file_path: Path to the YAML file.
+    :return: Dictionary containing the parameters.
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"YAML file {file_path} does not exist.")
+
+    with open(file_path, 'r') as file:
+        params = yaml.safe_load(file)
+
+    if not isinstance(params, dict):
+        raise ValueError("YAML file must contain a dictionary of parameters.")
+
+    if key:
+        if key not in params:
+            raise KeyError(f"Key '{key}' not found in the YAML file.")
+        return params.get(key)
+    else:
+        return params
 
 
 def find_files(dataset_dir, suffix):
@@ -69,7 +94,39 @@ def process_patching(args):
 
     bin_dir = os.path.join(args.dataset_dir, args.bin_prefix)
     binned_dataset_files = find_files(bin_dir, '.npz')
+    binned_file_paths = [file_path for file_paths in binned_dataset_files.values() for file_path in file_paths]
 
+    if args.patch_strategy == 'ics':
+        print('Using Information Content Sampling (ICS) for patch generation, creating global anchor points for patching.')
+        global_anchor_points_path = os.path.join(
+            bin_dir,
+            f"window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
+            f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_"
+            f"{args.patch_params.get('detection_metric_type')}_threshold_{args.patch_params.get('threshold')}_global_anchor_points.pkl"
+        )
+        if os.path.exists(global_anchor_points_path):
+            print(f"Loading existing global anchor points from {global_anchor_points_path}")
+            with open(global_anchor_points_path, 'rb') as f:
+                global_anchor_points = pickle.load(f)
+        else:
+            print("Calculating global anchor points for ICS patching...")
+            anchor_points_lists = parallel_get_anchor_points(
+                binned_file_paths=binned_file_paths,
+                patch_params=args.patch_params,
+                workers=args.num_workers
+            )
+
+            print("Aggregating and deduplicate anchor points...")
+            global_anchor_points_set = set()
+            for anchor_points_list in anchor_points_lists:
+                global_anchor_points_set.update(tuple(anchor_point) for anchor_point in anchor_points_list)
+
+            global_anchor_points = np.array(list(global_anchor_points_set))
+            print(f"Saving global anchor points to {global_anchor_points_path}")
+            with open(global_anchor_points_path, 'wb') as f:
+                pickle.dump(global_anchor_points, f)
+
+    print(f"Total unique global anchor points: {len(global_anchor_points)}")
     for class_name, file_paths in binned_dataset_files.items():
         print(f"Patching Class: {class_name}")
 
@@ -77,16 +134,8 @@ def process_patching(args):
             binned_file_paths=file_paths,
             prefix=args.patch_prefix,
             patch_strategy=args.patch_strategy,
-            max_peaks=args.max_peaks,
-            min_distance=args.min_distance,
-            intensity_threshold=args.intensity_threshold,
-            smoothing_sigma=args.smoothing_sigma,
-            pnds_overlap=args.pnds_overlap,
-            patch_width=args.patch_width,
-            patch_height=args.patch_height,
-            overlap_col=args.overlap_col,
-            overlap_row=args.overlap_row,
-            padding_value=args.padding_value,
+            patch_params=args.patch_params,
+            global_anchor_points=global_anchor_points if args.patch_strategy == 'ics' else None,
             workers=args.num_workers
         )
 
@@ -131,60 +180,46 @@ def process_patch_selection(args):
 
     patch_dir = os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')
     patched_dataset_files = find_files(patch_dir, '.npz')
+    patched_file_paths = [file_path for file_paths in patched_dataset_files.values() for file_path in file_paths]
 
-    if args.selection_strategy == 'class_average':
-        print(f'Generating shared indices per class using {args.score_strategy} scores...')
-        sorted_indices_dict = {}
-        sorted_indices_file_path = os.path.join(patch_dir, f'{args.selection_strategy}_{args.score_strategy}_sorted_indices.pkl')
+    # if args.selection_strategy == 'class_average':
+    print(f'Generating global sorted indices using {args.score_strategy} scores...')
+    global_sorted_indices_file_path = os.path.join(
+        patch_dir,
+        f"window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
+        f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_"
+        f"{args.patch_params.get('detection_metric_type')}_threshold_{args.patch_params.get('threshold')}_"
+        f"global_{args.score_strategy}_sorted_indices.pkl"
+    )
 
-        if os.path.exists(sorted_indices_file_path):
-            try:
-                with open(sorted_indices_file_path, 'rb') as f:
-                    sorted_indices_dict = pickle.load(f)
-            except Exception as e:
-                raise RuntimeError(f"Error loading indices from {sorted_indices_file_path}: {e}")
-
-        if not sorted_indices_dict:
-            for class_name, file_paths in patched_dataset_files.items():
-                print(f'Calculating average {args.score_strategy} scores for class {class_name}...')
-                class_indices = calculate_average_scores_and_indices(
-                    patched_file_paths=file_paths,
-                    score_strategy=args.score_strategy,
-                )
-                sorted_indices_dict[class_name] = class_indices
-
+    global_sorted_indices = None
+    if os.path.exists(global_sorted_indices_file_path):
         try:
-            with open(sorted_indices_file_path, 'wb') as f:
-                pickle.dump(sorted_indices_dict, f)
+            with open(global_sorted_indices_file_path, 'rb') as f:
+                global_sorted_indices = pickle.load(f)
         except Exception as e:
-            raise RuntimeError(f"Error saving indices to {sorted_indices_file_path}: {e}")
+            raise RuntimeError(f"Error loading indices from {global_sorted_indices_file_path}: {e}")
 
-        for class_name, file_paths in patched_dataset_files.items():
-            print(f"Selecting Top K Patches for Class: {class_name}")
+    if global_sorted_indices is None:
+        print(f'Calculating global average {args.score_strategy} scores for {len(patched_file_paths)} files...')
+        global_sorted_indices = calculate_average_scores_and_indices(
+            patched_file_paths=patched_file_paths,
+            score_strategy=args.score_strategy,
+        )
 
-            parallel_select_top_k_patches_per_class(
-                patched_file_paths=file_paths,
-                prefix=args.select_prefix,
-                selection_strategy=args.selection_strategy,
-                sorted_indices=sorted_indices_dict[class_name],
-                top_k=args.top_k,
-                workers=args.num_workers,
-            )
+        print(f"Saving global average {args.score_strategy} sorted indices to {global_sorted_indices_file_path}")
+        with open(global_sorted_indices_file_path, 'wb') as f:
+            pickle.dump(global_sorted_indices, f)
 
-    elif args.selection_strategy == 'per_file':
-        print(f'Executing per file selection using {args.score_strategy} scores...')
+    print(f"Selecting Top K Patches for {len(patched_file_paths)} files...")
 
-        for class_name, file_paths in patched_dataset_files.items():
-            print(f"Selecting Top K Patches for Class: {class_name}")
-
-            parallel_select_top_k_patches_per_file(
-                patched_file_paths=file_paths,
-                prefix=args.select_prefix,
-                selection_strategy=args.selection_strategy,
-                score_strategy=args.score_strategy,
-                top_k=args.top_k,
-                workers=args.num_workers
-            )
+    parallel_select_top_k_patches(
+        patched_file_paths=patched_file_paths,
+        prefix=args.select_prefix,
+        sorted_indices=global_sorted_indices,
+        top_k=args.top_k,
+        workers=args.num_workers,
+    )
 
     print('Dataset Top K Patches Selection Process Completed.')
     select_dir = f'{args.select_prefix}_{args.patch_prefix}_{args.bin_prefix}'
@@ -199,40 +234,27 @@ if __name__ == '__main__':
     parser.add_argument('--mz_min', type=float, required=True, help='Minimum m/z value for binning')
     parser.add_argument('--mz_max', type=float, required=True, help='Maximum m/z value for binning')
     parser.add_argument('--bin_size', type=float, required=True, help='Bin size for m/z binning')
-    parser.add_argument('--patch_strategy', type=str, required=True, choices=['pcp', 'grid'], help='Strategy to generate patches (e.g., pcp, grid)')
-    parser.add_argument('--max_peaks', type=int, default=-1, help='Maximum number of peaks to be extracted')
-    parser.add_argument('--min_distance', type=int, default=16, help='Minimum distance between peaks (PCP-PNDS)')
-    parser.add_argument('--intensity_threshold', type=float, default=0.1, help='Intensity threshold for peak extraction')
-    parser.add_argument('--smoothing_sigma', type=float, default=0.05, help='Gaussian smoothing sigma for peak extraction')
-    parser.add_argument('--pnds_overlap', type=float, default=0.2, help='Overlap ratio for PNDS sampling.')
-    parser.add_argument('--patch_width', type=int, default=32, help='Width of the patches to be extracted')
-    parser.add_argument('--patch_height', type=int, default=32, help='Height of the patches to be extracted')
-    parser.add_argument('--overlap_col', type=int, default=0, help='Number of overlapping pixels between patches in the column direction')
-    parser.add_argument('--overlap_row', type=int, default=0, help='Number of overlapping pixels between patches in the row direction')
-    parser.add_argument('--padding_value', type=float, default=0.0, help='Padding value for the patches')
+    parser.add_argument('--patch_strategy', type=str, required=True, choices=['grid', 'ics'], help='Strategy to generate patches (e.g., grid, ics)')
     parser.add_argument('--score_strategy', type=str, default='entropy', choices=['entropy', 'mean'], help='Strategy to calculate patch scores (e.g. Entropy: 1D image entropy, Mean: mean intensity, Random: random selection)')
-    parser.add_argument('--selection_strategy', type=str, choices=['per_file', 'class_average'], help='Strategy for selecting patches (e.g., per_file, class_average)')
     parser.add_argument('--top_k', type=int, default=256, help='Number of patches to be selected')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of worker processes to use')
     parser.add_argument('--random_seed', type=int, default=3407, help='Random seed for reproducibility')
 
     args = parser.parse_args()
 
-    # np.random.seed(args.random_seed)
-
     if '.' not in args.suffix:
         args.suffix = '.' + args.suffix
 
     args.bin_prefix = f'mz_{args.mz_min}-{args.mz_max}_bin_size_{args.bin_size}'
-    if args.patch_strategy == 'pcp':
-        args.selection_strategy = 'per_file'
-        if args.smoothing_sigma == 0:
-            args.patch_prefix = f'{args.patch_strategy}_patch_{args.patch_width}x{args.patch_height}_pnds_{args.pnds_overlap}_threshold_{args.intensity_threshold}'
-        else:
-            args.patch_prefix = f'{args.patch_strategy}_patch_{args.patch_width}x{args.patch_height}_pnds_{args.pnds_overlap}_threshold_{args.intensity_threshold}_sigma_{args.smoothing_sigma}'
-    elif args.patch_strategy == 'grid':
-        args.selection_strategy = 'class_average'
-        args.patch_prefix = f'{args.patch_strategy}_patch_{args.patch_width}x{args.patch_height}_overlap_{args.overlap_col}x{args.overlap_row}'
+
+    if args.patch_strategy == 'grid':
+        patch_params = load_params_from_yaml('../configs/patch_config.yaml', key=args.patch_strategy)
+        args.patch_prefix = f"{args.patch_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_overlap_{patch_params.get('overlap_row')}x{patch_params.get('overlap_col')}"
+        args.patch_params = patch_params
+    elif args.patch_strategy == 'ics':
+        patch_params = load_params_from_yaml('../configs/patch_config.yaml', key=args.patch_strategy)
+        args.patch_prefix = f"{args.patch_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_{patch_params.get('detection_metric_type')}_threshold_{patch_params.get('threshold')}"
+        args.patch_params = patch_params
     else:
         raise ValueError(f"Invalid patch strategy: {args.patch_strategy}. Choose either 'pcp' or 'grid'.")
     args.select_prefix = f'{args.score_strategy}_top_{args.top_k}' if args.score_strategy != 'random' else f'{args.score_strategy}_{args.top_k}'
@@ -249,13 +271,13 @@ if __name__ == '__main__':
 
         process_patching(args)
 
-    if args.step in ['all', 'patching', 'score_calculation', 'patch_selection']:
+    if args.step in ['all', 'score_calculation', 'patch_selection']:
         if not os.path.exists(os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')):
             raise FileNotFoundError(f'Patched dataset directory {os.path.join(args.dataset_dir, f"{args.patch_prefix}_{args.bin_prefix}")} does not exist. Please run the patching step first.')
 
         process_score_calculation(args)
 
-    if args.step in ['all', 'patching', 'score_calculation', 'patch_selection']:
+    if args.step in ['all', 'score_calculation', 'patch_selection']:
         if not os.path.exists(os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')):
             raise FileNotFoundError(f"Patched dataset directory {os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')} does not exist. Please run the patching step first.")
 

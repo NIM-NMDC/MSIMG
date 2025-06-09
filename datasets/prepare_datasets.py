@@ -5,7 +5,6 @@ import pandas as pd
 from utils.split_utils import split_dataset_files_by_class_stratified, split_dataset_files_by_domain_class_stratified
 from utils.rasterize_ms import binning
 from datasets.transforms import build_base_transform, build_dynamic_transform
-from datasets.datasets import MS2DIMGDomainDataset
 
 
 def prepare_ms_dataset(dataset, label_mapping, mz_min, mz_max, bin_size):
@@ -24,6 +23,7 @@ def prepare_ms_dataset(dataset, label_mapping, mz_min, mz_max, bin_size):
     for sample in dataset:
         file_path = sample['file_path']
         class_name = sample['class_name']
+
         df = pd.read_csv(file_path)
         mz_column, intensity_column = None, None
         for column in df.columns:
@@ -42,11 +42,32 @@ def prepare_ms_dataset(dataset, label_mapping, mz_min, mz_max, bin_size):
     return np.array(binned_spectra), np.array(labels)
 
 
-def prepare_ms_img_dataset():
+def prepare_ms_img_dataset(dataset, label_mapping):
     """
     Prepare the mass spectrometry image dataset.
+
+    :param dataset: List of dictionaries containing 'file_path' and 'class_name'.
+    :param label_mapping: Mapping from class names to labels.
     """
-    pass
+    patches_list = []
+    positions_list = []
+    padding_mask_list = []
+    labels = []
+
+    for sample in dataset:
+        file_path = sample['file_path']
+        class_name = sample['class_name']
+
+        patched_data = np.load(file_path)
+        patches = patched_data['patches']
+        positions = patched_data['positions']
+        padding_mask = patched_data['padding_mask']
+        patches_list.append(patches)
+        positions_list.append(positions)
+        padding_mask_list.append(padding_mask)
+        labels.append(label_mapping[class_name])
+    return np.array(patches_list), np.array(positions_list), np.array(padding_mask_list), np.array(labels)
+
 
 
 

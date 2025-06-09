@@ -68,8 +68,8 @@ def calculate_patches_scores(patched_file_path, score_strategy='entropy'):
 
         # Use temp files and rename to increase atomicity and prevent interruptions from causing file corruption,
         # temp_save_path = patched_file_path + '.tmp'
-        base, ext = os.path.split(patched_file_path)
-        temp_save_path = os.path.join(os.path.dirname(base), f"{os.path.basename(base)}_temp{ext}")
+        base, ext = os.path.splitext(patched_file_path)
+        temp_save_path = os.path.join(os.path.dirname(base), f"temp_{os.path.basename(base)}{ext}")
         try:
             np.savez_compressed(temp_save_path, **_patched_file_data)
             os.replace(temp_save_path, patched_file_path)
@@ -133,13 +133,6 @@ def calculate_average_scores_and_indices(patched_file_paths, score_strategy):
         except Exception as e:
             raise RuntimeError(f"Error loading file {file_path}: {e}")
 
-    """
-    When processing mass spectrometry data, the resulting matrix has a shape of (mz_bins, scans),
-    where mz_bins is fixed, but the number of scans may vary depending on how many spectra were collected in each file.
-    To ensure comparability during patch scoring and selection, we normalize the number of scores across all files.
-    Specifically, we truncate all score arrays to the same minimum length, retaining only the initial portion of patches for each file.
-    Any extra patches in files with more scans are discarded, which does not compromise the fairness or consistency of the overall evaluation.
-    """
     min_len = min(len(scores) for scores in scores_list)
 
     if min_len == 0:
