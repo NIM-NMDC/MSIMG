@@ -27,6 +27,7 @@ class Mlp(nn.Module):
 def window_partition(x, window_size):
     """
     Partition the input tensor into windows of size window_size.
+
     :param x: input tensor of shape (B, H, W, C)
     :param window_size: size of the window
     :return: windows: (B * num_windows, window_size, window_size, C)
@@ -40,6 +41,7 @@ def window_partition(x, window_size):
 def window_reverse(windows, window_size, H, W):
     """
     Reverse the window partitioning.
+
     :param windows: input tensor of shape (B * num_windows, window_size, window_size, C)
     :param window_size: size of the window
     :param H: height of the original tensor
@@ -59,13 +61,13 @@ class WindowAttention(nn.Module):
     """
     def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0.):
         """
-        :param dim: the dimension of the input feature (i.e., number of input channels)
-        :param window_size: the height and width size of the window
-        :param num_heads: number of attention heads
-        :param qkv_bias: if True, add a learnable bias to query, key, value
-        :param qk_scale: override default qk scale of head_dim ** -0.5 if set
-        :param attn_drop: dropout rate for attention weights
-        :param proj_drop: dropout rate for output projection
+        :param dim (int): the dimension of the input feature (i.e., number of input channels)
+        :param window_size (tuple[int]): the height and width size of the window
+        :param num_heads (int): number of attention heads
+        :param qkv_bias (bool, optional): if True, add a learnable bias to query, key, value
+        :param qk_scale (float | None, optional): override default qk scale of head_dim ** -0.5 if set
+        :param attn_drop (float, optional): dropout rate for attention weights
+        :param proj_drop (float, optional): dropout rate for output projection
         """
         super().__init__()
         self.dim = dim
@@ -439,7 +441,8 @@ class PatchEmbed(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         assert H == self.img_size[0] and W == self.img_size[1], f"Input image size ({H} * {W}) doesn't match model ({self.img_size[0]} * {self.img_size[1]})."
-        x = self.proj(x).flatten(2).transpose(1, 2)  # (B, Ph * Pw, C)
+        # (B, C, H, W) -> (B, embed_dim, Ph, Pw) -> (B, embed_dim, Ph * Pw) -> (B, Ph * Pw, embed_dim)
+        x = self.proj(x).flatten(2).transpose(1, 2)
         if self.norm is not None:
             x = self.norm(x)
         return x
