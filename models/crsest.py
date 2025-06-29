@@ -108,7 +108,7 @@ class CrossResolutionSEPatchMerging(nn.Module):
         # patch merging
         flops = self.patch_merging.flops()
         # squeeze-and-excitation
-        flops += self.se_blocks.flops(H, W)
+        flops += self.se_block.flops(H, W)
         return flops
 
 
@@ -312,6 +312,7 @@ if __name__ == "__main__":
 
     model = build_crsest(args)
     print(model)
+    print(model.flops())
 
     x = torch.randn(1, args.in_chans, args.img_size, args.img_size)
     print(f"Model Output: {model(x)}")
