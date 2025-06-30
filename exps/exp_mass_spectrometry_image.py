@@ -76,12 +76,12 @@ def _create_dataset(patches_list, positions_list, padding_mask_list, labels, ret
 
 def run_experiment(args):
     set_seeds(args.random_seed)
-
+    print(f"Dataset directory: {args.dataset_dir}")
     train_set, test_set = split_dataset_files_by_class_stratified(
         dataset_dir=args.dataset_dir,
         suffix='.npz',
-        train_size=0.9,
-        test_size=0.1,
+        train_size=0.8,
+        test_size=0.2,
         random_seed=args.random_seed
     )
     train_patches_list, train_positions_list, train_padding_mask_list, train_labels = prepare_ms_img_dataset(dataset=train_set, label_mapping=args.label_mapping)
@@ -235,8 +235,8 @@ def run_experiment(args):
     print(summary_stats_df)
 
     time_stamp = datetime.now().strftime('%Y%m%d%H%M%S')
-    fold_test_metrics_csv_path = os.path.join(exp_base_dir, f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_kfold_tested_on_holdout_metrics_{time_stamp}.csv")
-    summary_stats_csv_path = os.path.join(exp_base_dir, f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_kfold_tested_on_holdout_summary_stats_{time_stamp}.csv")
+    fold_test_metrics_csv_path = os.path.join(exp_base_dir, f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}_kfold_tested_on_holdout_metrics_{time_stamp}.csv")
+    summary_stats_csv_path = os.path.join(exp_base_dir, f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}_kfold_tested_on_holdout_summary_stats_{time_stamp}.csv")
     fold_test_metrics_df.to_csv(fold_test_metrics_csv_path, index=False)
     summary_stats_df.to_csv(summary_stats_csv_path, index=False)
 
@@ -264,7 +264,7 @@ def main():
     parser.add_argument('--pretrained', action='store_true', help='Use pretrained model')
     parser.add_argument('--use_multi_gpu', action='store_true', help='Use multiple GPUs')
     parser.add_argument('--use_early_stopping', action='store_true', help='Use early stopping')
-    parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
+    parser.add_argument('--patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--random_seed', type=int, default=3407, help='Random seed for reproducibility')
 
     args = parser.parse_args()
@@ -283,9 +283,14 @@ def main():
 
     patch_params = load_params_from_yaml(file_path=os.path.join(args.root_dir, 'configs/patch_config.yaml'), key=args.patch_strategy)
     # print(f"Patch parameters for strategy '{args.patch_strategy}': {patch_params}")
-    dataset_parent_dir = f"{args.score_strategy}_top_{args.top_k}_{args.patch_strategy}_patch_{args.patch_height}x{args.patch_width}_{patch_params.get('detection_metric_type')}_threshold_{patch_params.get('threshold')}_bin_size_{args.bin_size}"
+    if args.patch_strategy == 'ics':
+        dataset_sub_dir = f"{args.score_strategy}_top_{args.top_k}_{patch_params.get('information_metric')}_{args.patch_strategy}_patch_{args.patch_height}x{args.patch_width}_{patch_params.get('detection_metric_type')}_{patch_params.get('metric_threshold')}_bin_size_{args.bin_size}"
+    elif args.patch_strategy == 'grid':
+        dataset_sub_dir = f"{args.score_strategy}_top_{args.top_k}_{args.patch_strategy}_patch_{args.patch_height}x{args.patch_width}_overlap_{patch_params.get('overlap_row')}x{patch_params.get('overlap_col')}_bin_size_{args.bin_size}"
+    else:
+        raise ValueError(f"Invalid patch strategy: {args.patch_strategy}. Supported strategies are 'ics' and 'grid'.")
     dataset_dict = {
-        'ST000923-C8-pos': f"datasets/MS-IMG/ST000923-C8-pos/{dataset_parent_dir}",
+        'ST000923-C8-pos': f"datasets/MS-IMG/ST000923-C8-pos/{dataset_sub_dir}",
         # 'ST000923-C18-neg': f"{dataset_parent_dir}/ST000923-C18-neg",
         # 'ST000923-HILIC-pos': f"{dataset_parent_dir}/ST000923-HILIC-pos",
         # 'ST000923-HILIC-neg': f"{dataset_parent_dir}/ST000923-HILIC-neg",
@@ -294,7 +299,7 @@ def main():
         # 'ST001000-HILIC-pos': f"{dataset_parent_dir}/ST001000-HILIC-pos",
         # 'ST001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
         # 'ST003161': f"{dataset_parent_dir}/ST003161",
-        # 'ST003313': f"{dataset_parent_dir}/ST003313",
+        'ST003313': f"datasets/MS-IMG/ST003313/{dataset_sub_dir}",
         # 'PXD10371': f"{dataset_parent_dir}/PXD10371",
         # 'MSV000089237': f"{dataset_parent_dir}/MSV000089237",
     }

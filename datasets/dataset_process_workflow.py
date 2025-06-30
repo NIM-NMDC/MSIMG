@@ -7,6 +7,7 @@ import numpy as np
 
 from collections import defaultdict
 
+from utils.split_utils import split_dataset_files_by_class_stratified
 from utils.rasterize_ms import parallel_parse_ms
 from utils.patch_ms import parallel_get_anchor_points, parallel_generate_patches
 from utils.score_patches import parallel_calculate_patches_scores, calculate_average_scores_and_indices
@@ -94,15 +95,23 @@ def process_patching(args):
 
     bin_dir = os.path.join(args.dataset_dir, args.bin_prefix)
     binned_dataset_files = find_files(bin_dir, '.npz')
-    binned_file_paths = [file_path for file_paths in binned_dataset_files.values() for file_path in file_paths]
+    # binned_file_paths = [file_path for file_paths in binned_dataset_files.values() for file_path in file_paths]
+    binned_train_set, _ = split_dataset_files_by_class_stratified(
+        dataset_dir=bin_dir,
+        suffix='.npz',
+        train_size=0.8,
+        test_size=0.2,
+        random_seed=args.random_seed
+    )
+    binned_train_file_paths = [item['file_path'] for item in binned_train_set]
 
     if args.patch_strategy == 'ics':
         print('Using Information Content Sampling (ICS) for patch generation, creating global anchor points for patching.')
         global_anchor_points_path = os.path.join(
             bin_dir,
-            f"window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
-            f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_"
-            f"{args.patch_params.get('detection_metric_type')}_threshold_{args.patch_params.get('threshold')}_global_anchor_points.pkl"
+            f"{args.patch_params.get('information_metric')}_detection_window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
+            f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_{args.patch_params.get('detection_metric_type')}_{args.patch_params.get('metric_threshold')}_"
+            f"global_anchor_points.pkl"
         )
         if os.path.exists(global_anchor_points_path):
             print(f"Loading existing global anchor points from {global_anchor_points_path}")
@@ -111,7 +120,7 @@ def process_patching(args):
         else:
             print("Calculating global anchor points for ICS patching...")
             anchor_points_lists = parallel_get_anchor_points(
-                binned_file_paths=binned_file_paths,
+                binned_file_paths=binned_train_file_paths,
                 patch_params=args.patch_params,
                 workers=args.num_workers
             )
@@ -126,7 +135,8 @@ def process_patching(args):
             with open(global_anchor_points_path, 'wb') as f:
                 pickle.dump(global_anchor_points, f)
 
-    print(f"Total unique global anchor points: {len(global_anchor_points)}")
+            print(f"Total unique global anchor points: {len(global_anchor_points)}")
+
     for class_name, file_paths in binned_dataset_files.items():
         print(f"Patching Class: {class_name}")
 
@@ -144,17 +154,26 @@ def process_patching(args):
     print(f'Finished Step: Patching. Patched dataset directory: {os.path.join(args.dataset_dir, patch_dir)}')
 
 
-def process_score_calculation(args):
+def process_patch_selection(args):
     """
-    Process the calculation of scores for the patches (save inplace).
+    Process the score calculation and selection of top K patches from the patched MS files.
 
-    :param args: Arguments containing parameters for score calculation.
+    :param args: Arguments containing parameters for patch selection.
     """
     # Calculate Scores for Patches
     print('Calculating Scores for Patches...')
 
     patch_dir = os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')
     patched_dataset_files = find_files(patch_dir, '.npz')
+    # patched_file_paths = [file_path for file_paths in patched_dataset_files.values() for file_path in file_paths]
+    patched_train_set, _ = split_dataset_files_by_class_stratified(
+        dataset_dir=patch_dir,
+        suffix='.npz',
+        train_size=0.8,
+        test_size=0.2,
+        random_seed=args.random_seed
+    )
+    patched_train_file_paths = [item['file_path'] for item in patched_train_set]
 
     for class_name, file_paths in patched_dataset_files.items():
         print(f"Calculating scores for Class: {class_name}")
@@ -166,34 +185,21 @@ def process_score_calculation(args):
         )
 
     print('Dataset Score Calculation Process Completed.')
-    print(f'Finished Step: Score Calculation. Scored and patched dataset directory: {patch_dir}')
+    print(f'Finished Step: Score Calculation. Scored dataset directory: {patch_dir}')
 
-
-def process_patch_selection(args):
-    """
-    Process the selection of top K patches from the patched MS files.
-
-    :param args: Arguments containing parameters for patch selection.
-    """
     # Selecting Top K Patches
     print('Selecting Top K Patches...')
-
-    patch_dir = os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')
-    patched_dataset_files = find_files(patch_dir, '.npz')
-    patched_file_paths = [file_path for file_paths in patched_dataset_files.values() for file_path in file_paths]
-
-    # if args.selection_strategy == 'class_average':
     print(f'Generating global sorted indices using {args.score_strategy} scores...')
     global_sorted_indices_file_path = os.path.join(
         patch_dir,
-        f"window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
-        f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_"
-        f"{args.patch_params.get('detection_metric_type')}_threshold_{args.patch_params.get('threshold')}_"
+        f"{args.patch_params.get('information_metric')}_detection_window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
+        f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_{args.patch_params.get('detection_metric_type')}_{args.patch_params.get('metric_threshold')}_"
         f"global_{args.score_strategy}_sorted_indices.pkl"
     )
 
     global_sorted_indices = None
     if os.path.exists(global_sorted_indices_file_path):
+        print(f"Loading existing global sorted indices from {global_sorted_indices_file_path}")
         try:
             with open(global_sorted_indices_file_path, 'rb') as f:
                 global_sorted_indices = pickle.load(f)
@@ -201,9 +207,9 @@ def process_patch_selection(args):
             raise RuntimeError(f"Error loading indices from {global_sorted_indices_file_path}: {e}")
 
     if global_sorted_indices is None:
-        print(f'Calculating global average {args.score_strategy} scores for {len(patched_file_paths)} files...')
+        print(f'Calculating global average {args.score_strategy} scores for {len(patched_train_file_paths)} files...')
         global_sorted_indices = calculate_average_scores_and_indices(
-            patched_file_paths=patched_file_paths,
+            patched_file_paths=patched_train_file_paths,
             score_strategy=args.score_strategy,
         )
 
@@ -211,15 +217,16 @@ def process_patch_selection(args):
         with open(global_sorted_indices_file_path, 'wb') as f:
             pickle.dump(global_sorted_indices, f)
 
-    print(f"Selecting Top K Patches for {len(patched_file_paths)} files...")
-
-    parallel_select_top_k_patches(
-        patched_file_paths=patched_file_paths,
-        prefix=args.select_prefix,
-        sorted_indices=global_sorted_indices,
-        top_k=args.top_k,
-        workers=args.num_workers,
-    )
+    # print(f"Selecting Top K Patches for {len(patched_file_paths)} files...")
+    for class_name, file_paths in patched_dataset_files.items():
+        print(f"Calculating scores for Class: {class_name}")
+        parallel_select_top_k_patches(
+            patched_file_paths=file_paths,
+            prefix=args.select_prefix,
+            sorted_indices=global_sorted_indices,
+            top_k=args.top_k,
+            workers=args.num_workers,
+        )
 
     print('Dataset Top K Patches Selection Process Completed.')
     select_dir = f'{args.select_prefix}_{args.patch_prefix}_{args.bin_prefix}'
@@ -253,7 +260,7 @@ if __name__ == '__main__':
         args.patch_params = patch_params
     elif args.patch_strategy == 'ics':
         patch_params = load_params_from_yaml('../configs/patch_config.yaml', key=args.patch_strategy)
-        args.patch_prefix = f"{args.patch_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_{patch_params.get('detection_metric_type')}_threshold_{patch_params.get('threshold')}"
+        args.patch_prefix = f"{patch_params.get('information_metric')}_{args.patch_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_{patch_params.get('detection_metric_type')}_{patch_params.get('metric_threshold')}"
         args.patch_params = patch_params
     else:
         raise ValueError(f"Invalid patch strategy: {args.patch_strategy}. Choose either 'pcp' or 'grid'.")
@@ -271,13 +278,7 @@ if __name__ == '__main__':
 
         process_patching(args)
 
-    if args.step in ['all', 'score_calculation', 'patch_selection']:
-        if not os.path.exists(os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')):
-            raise FileNotFoundError(f'Patched dataset directory {os.path.join(args.dataset_dir, f"{args.patch_prefix}_{args.bin_prefix}")} does not exist. Please run the patching step first.')
-
-        process_score_calculation(args)
-
-    if args.step in ['all', 'score_calculation', 'patch_selection']:
+    if args.step in ['all', 'patch_selection']:
         if not os.path.exists(os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')):
             raise FileNotFoundError(f"Patched dataset directory {os.path.join(args.dataset_dir, f'{args.patch_prefix}_{args.bin_prefix}')} does not exist. Please run the patching step first.")
 

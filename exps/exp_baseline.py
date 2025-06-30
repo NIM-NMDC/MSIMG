@@ -25,7 +25,7 @@ from utils.ml_train_utils import train_test_ml
 from utils.metrics import calculate_bootstrap_ci
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
 
 
 def set_seeds(seed):
@@ -51,8 +51,8 @@ def run_experiment(args):
     train_set, test_set = split_dataset_files_by_class_stratified(
         dataset_dir=args.dataset_dir,
         suffix='.csv',
-        train_size=0.9,
-        test_size=0.1,
+        train_size=0.8,
+        test_size=0.2,
         random_seed=args.random_seed
     )
     X_train, y_train = prepare_ms_dataset(dataset=train_set, label_mapping=args.label_mapping, mz_min=args.mz_min, mz_max=args.mz_max, bin_size=args.bin_size)
@@ -255,7 +255,7 @@ def main():
         # 'ST001000-HILIC-pos': f"{dataset_parent_dir}/ST001000-HILIC-pos",
         # 'ST001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
         # 'ST003161': f"{dataset_parent_dir}/ST003161",
-        # 'ST003313': f"{dataset_parent_dir}/ST003313",
+        'ST003313': f"{dataset_parent_dir}/ST003313",
         # 'PXD010371': f"{dataset_parent_dir}/PXD010371",
         # 'MSV000089237': f"{dataset_parent_dir}/MSV000089237",
     }

@@ -2,7 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve, auc
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve, auc
 from sklearn.utils import resample as bootstrap_resample
 from scipy.stats import wilcoxon
 
@@ -15,6 +15,16 @@ def calculate_accuracy(y_true, y_pred):
     :param y_pred: predicted labels
     """
     return accuracy_score(y_true=y_true, y_pred=y_pred)
+
+
+def calculate_balanced_accuracy(y_true, y_pred):
+    """
+    Calculate balanced accuracy.
+
+    :param y_true: true labels
+    :param y_pred: predicted labels
+    """
+    return balanced_accuracy_score(y_true=y_true, y_pred=y_pred)
 
 
 def calculate_precision(y_true, y_pred, average='macro', zero_division=0):
@@ -135,3 +145,19 @@ def calculate_wilcoxon_test_p_value(model_alpha_metrics_file, model_beta_metrics
 
     result = wilcoxon(values_a, values_b, alternative='two-sided', zero_method='wilcox', correction=False)
     return result.pvalue
+
+
+if __name__ == '__main__':
+    dataset_name = ''
+    model_name = ''
+    model_alpha_metrics_file = fr"Experiment Results\{dataset_name}\{model_name}\{model_name}_kfold_tested_on_holdout_metrics.csv"
+    model_beta_metrics_file = fr"Experiment Results\{dataset_name}\{model_name}\MSMCE-{model_name}\MSMCE-{model_name}_kfold_tested_on_holdout_metrics.csv"
+
+    for metric in ['Accuracy', 'F1 Score']:
+        p_value = calculate_wilcoxon_test_p_value(
+            model_alpha_metrics_file=model_alpha_metrics_file,
+            model_beta_metrics_file=model_beta_metrics_file,
+            metric_to_compare=metric
+        )
+
+        print(f'{metric} P-value: {p_value}')

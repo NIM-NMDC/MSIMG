@@ -41,7 +41,18 @@ def calculate_local_variance_map(image, window_size):
     return variance_map
 
 
-def information_content_sampling(information_map, detection_window_height, detection_window_width, step_height, step_width, detection_metric_type='mean', threshold=0.05):
+def calculate_signal_mask_map(image, window_size, intensity_threshold=0.01):
+    """
+    Calculate the signal mask map of the image.
+    The occupancy map is a binary map where pixels above the intensity threshold are marked as occupied.
+    """
+    signal_mask = (image > intensity_threshold).astype(np.float32)
+    return signal_mask
+    # occupancy_map = ndimage.uniform_filter(signal_mask, size=window_size, mode='reflect')
+    # return occupancy_map
+
+
+def information_content_sampling(information_map, detection_window_height, detection_window_width, step_height, step_width, detection_metric_type='mean', metric_threshold=0.05):
     """
     Perform Information Content Sampling (ICS) on the information map to select patches.
     Using a sliding window on the information map to find the center point of the area where the information content is above the threshold.
@@ -52,7 +63,7 @@ def information_content_sampling(information_map, detection_window_height, detec
     :param step_height: Vertical step size for sliding the window.
     :param step_width: Horizontal step size for sliding the window.
     :param detection_metric_type: Metric to use for sampling ('mean', 'max', 'min').
-    :param threshold: Threshold value for selecting patches.
+    :param metric_threshold: Threshold value for the detection metric.
     :return: List of coordinates where patches are sampled.
     """
     assert detection_metric_type in ['mean', 'max', 'min'], "metric_type must be one of ['mean', 'max', 'min']"
@@ -77,7 +88,7 @@ def information_content_sampling(information_map, detection_window_height, detec
             else:
                 raise ValueError(f"Unsupported metric type: {detection_metric_type}. Choose 'mean' or 'max'.")
 
-            if metric_value >= threshold:
+            if metric_value >= metric_threshold:
                 row_center = row_start + detection_window_height // 2
                 col_center = col_start + detection_window_width // 2
                 anchor_point_coords.append((row_center, col_center))
@@ -97,14 +108,29 @@ def get_anchor_points(binned_file_path, patch_params):
         raw_image = sparse_matrix.toarray()
         normalized_image = get_normalized_image(raw_image)
 
-        ics_window_size = patch_params.get('ics_window_size', 16)
-        information_map = calculate_local_variance_map(image=normalized_image, window_size=(ics_window_size, ics_window_size))
+        information_metric = patch_params.get('information_metric')
+        information_map_window_size = patch_params.get('information_map_window_size', 16)
+        # print(f"Calculating information map using {information_metric} with window size {information_map_window_size}x{information_map_window_size}")
+        information_map = None
+        if information_metric == 'local_variance':
+            information_map = calculate_local_variance_map(
+                image=normalized_image,
+                window_size=(information_map_window_size, information_map_window_size)
+            )
 
-        map_min, map_max = np.min(information_map), np.max(information_map)
-        if map_max > map_min:
-            normalized_information_map = (information_map - map_min) / (map_max - map_min)
+            map_min, map_max = np.min(information_map), np.max(information_map)
+            if map_max > map_min:
+                information_map = (information_map - map_min) / (map_max - map_min)
+            else:
+                raise ValueError(f"Information map is constant in {binned_file_path}")
+        elif information_metric == 'signal_mask':
+            information_map = calculate_signal_mask_map(
+                image=normalized_image,
+                window_size=(information_map_window_size, information_map_window_size),
+                intensity_threshold=patch_params.get('intensity_threshold', 0.01)
+            )
         else:
-            raise ValueError(f"Information map is constant in {binned_file_path}")
+            raise ValueError(f"Unsupported information metric: {information_metric}. Choose 'local_variance' or 'signal_occupancy'.")
 
         detection_window_height = patch_params.get('detection_window_height', 32)
         detection_window_width = patch_params.get('detection_window_width', 32)
@@ -116,13 +142,13 @@ def get_anchor_points(binned_file_path, patch_params):
             step_width = detection_window_width
 
         anchor_points = information_content_sampling(
-            information_map=normalized_information_map,
+            information_map=information_map,
             detection_window_height=detection_window_height,
             detection_window_width=detection_window_width,
             step_height=step_height,
             step_width=step_width,
             detection_metric_type=patch_params.get('detection_metric_type', 'mean'),
-            threshold=patch_params.get('threshold', 0.05)
+            metric_threshold=patch_params.get('metric_threshold', 0.05)
         )
 
         return anchor_points
