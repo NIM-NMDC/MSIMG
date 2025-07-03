@@ -15,8 +15,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.utils.class_weight import compute_class_weight
 
+from utils.file_utils import get_file_paths_grouped_by_class
 from utils.split_utils import split_dataset_files_by_class_stratified
-from datasets.prepare_datasets import prepare_ms_dataset
+from utils.data_loader import load_ms_dataset
 from datasets.datasets import MSDataset
 from models.resnet_1d import build_resnet_1d
 from callbacks.early_stopping import EarlyStopping
@@ -47,16 +48,16 @@ def _create_dataset(X, y, transform=False):
 
 def run_experiment(args):
     set_seeds(args.random_seed)
-
+    print(f"Dataset directory: {args.dataset_dir}")
+    file_paths_by_class = get_file_paths_grouped_by_class(base_dir=args.dataset_dir, suffix='.csv')
     train_set, test_set = split_dataset_files_by_class_stratified(
-        dataset_dir=args.dataset_dir,
-        suffix='.csv',
+        file_paths_by_class=file_paths_by_class,
         train_size=0.8,
         test_size=0.2,
         random_seed=args.random_seed
     )
-    X_train, y_train = prepare_ms_dataset(dataset=train_set, label_mapping=args.label_mapping, mz_min=args.mz_min, mz_max=args.mz_max, bin_size=args.bin_size)
-    X_test, y_test = prepare_ms_dataset(dataset=test_set, label_mapping=args.label_mapping, mz_min=args.mz_min, mz_max=args.mz_max, bin_size=args.bin_size)
+    X_train, y_train = load_ms_dataset(dataset=train_set, label_mapping=args.label_mapping, mz_min=args.mz_min, mz_max=args.mz_max, bin_size=args.bin_size)
+    X_test, y_test = load_ms_dataset(dataset=test_set, label_mapping=args.label_mapping, mz_min=args.mz_min, mz_max=args.mz_max, bin_size=args.bin_size)
 
     exp_dir_name = (f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_"
                     f"in_channels_{args.in_channels}_spectrum_dim_{args.spectrum_dim}_batch_size_{args.batch_size}")
@@ -71,7 +72,7 @@ def run_experiment(args):
 
     for fold_idx, (train_fold_indices, valid_fold_indices) in enumerate(skf.split(X_train, y_train)):
         print(f"{args.model_name} Fold {fold_idx + 1}/{args.k_folds}")
-        exp_model_name = f"{args.model_name}_kfold_{fold_idx + 1}_trained_on_{args.dataset_name}_{args.num_classes}"
+        exp_model_name = f"kfold_{fold_idx + 1}_{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}"
 
         X_train_fold, y_train_fold = X_train[train_fold_indices], y_train[train_fold_indices]
         X_valid_fold, y_valid_fold = X_train[valid_fold_indices], y_train[valid_fold_indices]

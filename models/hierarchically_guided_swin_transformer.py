@@ -2,17 +2,17 @@ import torch
 import torch.nn as nn
 from torch.nn.init import trunc_normal_
 
-from swin_transformer import PatchMerging, PatchEmbed, BasicLayer
+from swin_transformer import PatchEmbed, BasicLayer
 
 
 """
-Cross-Resolution Squeeze-and-Excitation Swin Transformer, CRSEST
+Hierarchically-Guided Swin Transformer, HG-Swin
 """
 
 
-class CrossResolutionSE(nn.Module):
+class SqueezeExcitationBlock(nn.Module):
     """
-    Cross-Resolution Squeeze-and-Excitation block.
+    Squeeze-and-Excitation block.
     """
     def __init__(self, in_chans, out_chans, reduction=16):
         super().__init__()
@@ -31,8 +31,8 @@ class CrossResolutionSE(nn.Module):
 
     def forward(self, x):
         """
-        :param x: input tensor of shape (B, C, H, W)
-        :return y: output tensor of shape (B, 2C)
+        :param x: input tensor of shape (B, IN_C, H, W)
+        :return y: output tensor of shape (B, OUT_C)
         """
         B, C, _, _ = x.shape
         y = self.squeeze(x).view(B, C)
@@ -52,69 +52,70 @@ class CrossResolutionSE(nn.Module):
         return flops
 
 
-class CrossResolutionSEPatchMerging(nn.Module):
+class AttentivePatchMerging(nn.Module):
     """
-    Cross-Resolution Squeeze-and-Excitation block for patch merging.
+    Attentive Patch Merging with Cross-Resolution Squeeze-and-Excitation.
+    This layer uses the intermediate 4C-channel tensor (after concatenation) to generate attention weights,
+    which are then applied to the final 2C-channel output tensor (after linear reduction).
     """
     def __init__(self, input_resolution, dim, norm_layer=nn.LayerNorm):
-        """
-        :param input_resolution (tuple[int]): Input resolution.
-        :param dim (int): Number of input channels.
-        :param norm_layer (nn.Module, optional): Normalization layer. Default: nn.LayerNorm
-        """
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
+        self.norm = norm_layer(4 * dim)
+        self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
 
-        self.patch_merging = PatchMerging(input_resolution=input_resolution, dim=dim, norm_layer=norm_layer)
-
-        self.se_block = CrossResolutionSE(in_chans=dim, out_chans=2 * dim)
+        self.se_block = SqueezeExcitationBlock(in_chans=4 * dim, out_chans=2 * dim)
 
     def forward(self, x):
-        """
-        :param x: input tensor of shape (B, H * W, C)
-        """
+        # x: (B, H * W, C)
         H, W = self.input_resolution
         B, L, C = x.shape
         assert L == H * W, "input feature has wrong size."
         assert H % 2 == 0 and W % 2 == 0, f"x size ({H} * {W}) are not even."
 
-        x_se = x.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
-        excitation_weights = self.se_block(x_se)  # (B, 2C)
+        x = x.view(B, H, W, C)
 
-        x_merged = self.patch_merging(x)  # (B, H / 2 * W / 2, 2C)
+        x0 = x[:, 0::2, 0::2, :]  # (B, H / 2, W / 2, C)
+        x1 = x[:, 1::2, 0::2, :]  # (B, H / 2, W / 2, C)
+        x2 = x[:, 0::2, 1::2, :]  # (B, H / 2, W / 2, C)
+        x3 = x[:, 1::2, 1::2, :]  # (B, H / 2, W / 2, C)
+        x_4c = torch.cat([x0, x1, x2, x3], dim=-1)  # (B, H / 2, W / 2, 4C)
+
+        # generate excitation weights from the 4C-channel tensor
+        x_se = x_4c.permute(0, 3, 1, 2).contiguous()  # (B, 4C, H / 2, W / 2)
+        excitation_weights = self.se_block(x_se)
+
+        x_merged = x_4c.view(B, -1, 4 * C)  # (B, H / 2 * W / 2, 4C)
+        x_merged = self.norm(x_merged)
+        x_reduced = self.reduction(x_merged)  # (B, H / 2 * W / 2, 2C)
+
+        H_merged, W_merged = H // 2, W // 2
 
         # apply the excitation weights to the merged features
-        _, L_merged, C_merged = x_merged.shape
-        H_merged, W_merged = H // 2, W // 2
-        assert C_merged == 2 * C, f"merged feature has wrong size: {C_merged} != {2 * C}"
-        assert L_merged == H_merged * W_merged, "merged feature has wrong size."
-        x_merged = x_merged.view(B, H_merged, W_merged, C_merged)
-        excitation_weights = excitation_weights.view(B, 1, 1, C_merged)
-
-        x_excited = x_merged * excitation_weights.expand_as(x_merged)  # (B, H / 2, W / 2, 2C)
-        x_excited = x_excited.view(B, H_merged * W_merged, C_merged)
-
+        x_reduced_reshaped = x_reduced.view(B, 2 * C, H_merged, W_merged)  # (B, 2C, H / 2, W / 2)
+        excitation_weights = excitation_weights.view(B, 2 * C, 1, 1)  # (B, 2C, 1, 1)
+        x_excited = x_reduced_reshaped * excitation_weights.expand_as(x_reduced_reshaped)  # (B, 2C, H / 2, W / 2)
+        x_excited = x_excited.view(B, H_merged * W_merged, 2 * C)  # (B, H / 2 * W / 2, 2C)
         return x_excited  # (B, H / 2 * W / 2, 2C)
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         return f"input_resolution={self.input_resolution}, dim={self.dim}"
 
     def flops(self):
-        """
-        Calculate the FLOPs of the Cross-Resolution Squeeze-and-Excitation Patch Merging.
-        """
         H, W = self.input_resolution
+        H_merged, W_merged = H // 2, W // 2
         # patch merging
-        flops = self.patch_merging.flops()
-        # squeeze-and-excitation
-        flops += self.se_block.flops(H, W)
+        flops = H * W * self.dim
+        flops += H_merged * W_merged * 4 * self.dim * 2 * self.dim
+        # se block
+        flops += self.se_block.flops(H_merged, W_merged)
         return flops
 
 
-class CRSEST(nn.Module):
+class HierarchicallyGuidedSwinTransformer(nn.Module):
     """
-    Cross-Resolution Squeeze-and-Excitation Swin Transformer.
+    Hierarchically-Guided Swin Transformer.
     """
     def __init__(self, img_size=224, patch_size=4, in_chans=3, num_classes=1000,
                  embed_dim=96, depths=[2, 2, 6, 2], num_heads=[3, 6, 12, 24],
@@ -184,7 +185,7 @@ class CRSEST(nn.Module):
                 drop=drop_rate, attn_drop=attn_drop_rate,
                 drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
                 norm_layer=norm_layer,
-                downsample=CrossResolutionSEPatchMerging if (i_layer < self.num_layers - 1) else None,
+                downsample=AttentivePatchMerging if (i_layer < self.num_layers - 1) else None,
                 use_checkpoint=use_checkpoint
             )
             self.layers.append(layer)
@@ -241,18 +242,18 @@ class CRSEST(nn.Module):
         return flops
 
 
-def build_crsest(args):
+def build_hierarchically_guided_swin_transformer(args):
     """
-    Build a Cross-Resolution Squeeze-and-Excitation Swin Transformer model based on the provided arguments.
+    Build a Hierarchically-Guided Swin Transformer model based on the provided arguments.
 
     :param args: Arguments containing model configuration.
     :return: CRSEST model.
     """
     crsest_parameters = {
-        'CRSEST-T': {'embed_dim': 96, 'depths': [2, 2, 6, 2], 'num_heads': [3, 6, 12, 24]},
-        'CRSEST-S': {'embed_dim': 96, 'depths': [2, 2, 18, 2], 'num_heads': [3, 6, 12, 24]},
-        'CRSEST-B': {'embed_dim': 128, 'depths': [2, 2, 18, 2], 'num_heads': [4, 8, 16, 32]},
-        'CRSEST-L': {'embed_dim': 192, 'depths': [2, 2, 18, 2], 'num_heads': [6, 12, 24, 48]},
+        'HG-Swin-T': {'embed_dim': 96, 'depths': [2, 2, 6, 2], 'num_heads': [3, 6, 12, 24]},
+        'HG-Swin-S': {'embed_dim': 96, 'depths': [2, 2, 18, 2], 'num_heads': [3, 6, 12, 24]},
+        'HG-Swin-B': {'embed_dim': 128, 'depths': [2, 2, 18, 2], 'num_heads': [4, 8, 16, 32]},
+        'HG-Swin-L': {'embed_dim': 192, 'depths': [2, 2, 18, 2], 'num_heads': [6, 12, 24, 48]},
     }
 
     config = crsest_parameters.get(args.model_name)
@@ -264,7 +265,7 @@ def build_crsest(args):
             f"Please choose from: {valid_models}."
         )
 
-    model = CRSEST(
+    model = HierarchicallyGuidedSwinTransformer(
         img_size=getattr(args, 'img_size', 224),
         patch_size=getattr(args, 'patch_size', 4),
         in_chans=getattr(args, 'in_chans', 3),
@@ -292,7 +293,7 @@ if __name__ == "__main__":
     import argparse
     # Example usage
     args = {
-        'model_name': 'CRSEST-T',
+        'model_name': 'HG-Swin-T',
         'img_size': 224,
         'patch_size': 4,
         'in_chans': 3,
@@ -310,7 +311,7 @@ if __name__ == "__main__":
     }
     args = argparse.Namespace(**args)
 
-    model = build_crsest(args)
+    model = build_hierarchically_guided_swin_transformer(args)
     print(model)
     print(model.flops())
 

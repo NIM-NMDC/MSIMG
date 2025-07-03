@@ -1,6 +1,8 @@
 import os
 import shutil
 
+from collections import defaultdict
+
 
 def get_file_paths(base_dir, suffix):
     file_paths = []
@@ -14,6 +16,19 @@ def get_file_paths(base_dir, suffix):
         return file_paths
     else:
         raise FileNotFoundError(f"Directory {base_dir} not found.")
+
+
+def get_file_paths_grouped_by_class(base_dir, suffix) -> dict[str, list[str]]:
+    file_paths_by_class = defaultdict(list)
+
+    if os.path.exists(base_dir):
+        for root, dirs, files in os.walk(base_dir):
+            class_name = os.path.basename(root)
+            for file in files:
+                if file.endswith(suffix):
+                    file_path = os.path.join(root, file)
+                    file_paths_by_class[class_name].append(file_path)
+    return file_paths_by_class
 
 
 def move_files(base_dir, suffix, target_labels, get_label_function=None):

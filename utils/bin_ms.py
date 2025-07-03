@@ -4,9 +4,25 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from scipy import sparse
+from pathlib import Path
 from functools import partial
 from multiprocessing import Pool
 from pyteomics import mzml, mzxml
+
+
+def _create_save_path(file_path, prefix):
+    """
+    Create a save path based on the original file path and a prefix.
+    """
+    p = Path(file_path)
+
+    base_dir = p.parent.parent
+    class_name = p.parent.name
+    save_dir = base_dir / prefix / class_name
+    save_dir.mkdir(parents=True, exist_ok=True)
+    new_file_name = p.with_suffix('.npz').name
+    save_path = save_dir / new_file_name
+    return save_path
 
 
 def binning(mz_array, intensity_array, mz_min, mz_max, bin_size=0.01):
@@ -54,15 +70,10 @@ def parse_spec(spec, mz_min, mz_max, bin_size):
 
 def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
     try:
-        # /dataset_dir/{class_name}/{bin_prefix}_file_name.npz
-        class_name = os.path.basename(os.path.dirname(ms_file_path))
-        file_name = os.path.splitext(os.path.basename(ms_file_path))[0]
+        if not (os.path.exists(ms_file_path) and os.path.getsize(ms_file_path) > 0):
+            raise FileNotFoundError(f"File not found or empty: {ms_file_path}")
 
-        dataset_dir = os.path.dirname(os.path.dirname(ms_file_path))
-        save_dir = os.path.join(dataset_dir, prefix, class_name)
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, f'{prefix}_{file_name}.npz')
-
+        save_path = _create_save_path(ms_file_path, prefix)
         if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
             return True
 
@@ -127,31 +138,61 @@ def parallel_parse_ms(ms_file_paths, prefix, mz_min, mz_max, bin_size, workers=4
     print(f"Binning completed. Success rate: {success_rate:.2%}")
 
 
+def process_binning(args, ms_file_paths):
+    """
+    Process the binning of MS files.
+    """
+    # Binning MS files
+    print('Binning MS Files...')
+
+    parallel_parse_ms(
+        ms_file_paths=ms_file_paths,
+        prefix=args.bin_prefix,
+        mz_min=args.mz_min,
+        mz_max=args.mz_max,
+        bin_size=args.bin_size,
+        workers=args.num_workers
+    )
+
+    print('Binning Process Completed.')
+
+
 if __name__ == '__main__':
-    # parse_ms(
-    #     ms_file_path=r"E:\msdata\ST000923\HMP2_C8-pos\C8p_rawData\CD\0024_XAV_iHMP2_LIP_SM-6CAJC_CD.mzML",
-    #     prefix="mz",
-    #     mz_min=200,
-    #     mz_max=1100,
-    #     bin_size=0.01
-    # )
+    import argparse
+    from utils.file_utils import get_file_paths
+    parser = argparse.ArgumentParser(description='Dataset Process Workflow')
+    parser.add_argument('--dataset_dir', type=str, required=True, help='Path to the dataset directory')
+    parser.add_argument('--suffix', type=str, default='mzML', help='File suffix to filter (e.g., .mzML, .mzXML)')
+    parser.add_argument('--mz_min', type=float, required=True, help='Minimum m/z value for binning')
+    parser.add_argument('--mz_max', type=float, required=True, help='Maximum m/z value for binning')
+    parser.add_argument('--bin_size', type=float, required=True, help='Bin size for m/z binning')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of worker processes to use')
 
-    import re
-    import pandas as pd
-    file_path = r"E:\msdata\ST000923\HMP2_C8-pos\C8p_rawData\Quantitative Table\CD\0024_XAV_iHMP2_LIP_SM-6CAJC_CD_peaks.csv"
-    df = pd.read_csv(file_path)
-    mz_column, intensity_column = None, None
-    for column in df.columns:
-        if re.search(r'\bm\/?z\b', column, re.IGNORECASE):
-            mz_column = column
-        elif re.search(r'peak height', column, re.IGNORECASE):
-            intensity_column = column
-    print(f'mz_column: {mz_column}, intensity_column: {intensity_column}')
+    args = parser.parse_args()
 
-    if mz_column is None or intensity_column is None:
-        raise ValueError(f"Could not find m/z or intensity columns in {file_path}")
-    mz_array = df[mz_column].values
-    intensity_array = df[intensity_column].values
-    binned_spectrum = binning(mz_array, intensity_array, 200, 1100, 0.01)
-    print(f"Binned spectrum shape: {binned_spectrum.shape}")
-    print(f"Binned spectrum: {binned_spectrum[:20]}")  # Print first 10 bins for verification
+    if '.' not in args.suffix:
+        args.suffix = '.' + args.suffix
+
+    args.bin_prefix = f'mz_{args.mz_min}-{args.mz_max}_bin_size_{args.bin_size}'
+    ms_file_paths = get_file_paths(base_dir=args.dataset_dir, suffix=args.suffix)
+    process_binning(args=args, ms_file_paths=ms_file_paths)
+
+#     import re
+#     import pandas as pd
+#     file_path = r"E:\msdata\ST000923\HMP2_C8-pos\C8p_rawData\Quantitative Table\CD\0024_XAV_iHMP2_LIP_SM-6CAJC_CD_peaks.csv"
+#     df = pd.read_csv(file_path)
+#     mz_column, intensity_column = None, None
+#     for column in df.columns:
+#         if re.search(r'\bm\/?z\b', column, re.IGNORECASE):
+#             mz_column = column
+#         elif re.search(r'peak height', column, re.IGNORECASE):
+#             intensity_column = column
+#     print(f'mz_column: {mz_column}, intensity_column: {intensity_column}')
+#
+#     if mz_column is None or intensity_column is None:
+#         raise ValueError(f"Could not find m/z or intensity columns in {file_path}")
+#     mz_array = df[mz_column].values
+#     intensity_array = df[intensity_column].values
+#     binned_spectrum = binning(mz_array, intensity_array, 200, 1100, 0.01)
+#     print(f"Binned spectrum shape: {binned_spectrum.shape}")
+#     print(f"Binned spectrum: {binned_spectrum[:20]}")  # Print first 10 bins for verification

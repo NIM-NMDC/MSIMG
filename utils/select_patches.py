@@ -1,9 +1,12 @@
 import os
 import numpy as np
+import pickle
 from tqdm import tqdm
 from pathlib import Path
 from functools import partial
 from multiprocessing import Pool
+
+from utils.score_patches import parallel_calculate_patches_scores, calculate_average_scores
 
 
 def _create_save_path(file_path, prefix):
@@ -20,9 +23,7 @@ def _create_save_path(file_path, prefix):
     new_dir_name = f"{prefix}_{class_parent_dir_name}"
     save_dir = dataset_dir / new_dir_name / class_name
     save_dir.mkdir(parents=True, exist_ok=True)
-
-    new_file_name = f"{prefix}_{file_name}"
-    save_path = save_dir / new_file_name
+    save_path = save_dir / file_name
     return save_path
 
 
@@ -106,3 +107,48 @@ def parallel_select_top_k_patches(patched_file_paths, prefix, sorted_indices, to
     print(f"Patch Selection completed. Success rate: {success_rate:.2%}")
 
 
+def process_patch_selection(args, patched_dataset_dir, patched_file_paths):
+    """
+    Process the score calculation and selection of top K patches from the patched MS files.
+    """
+    # Selecting Top K Patches
+    print('Selecting Top K Patches...')
+    print(f'Generating global sorted indices using {args.score_strategy} scores...')
+    global_sorted_indices_file_path = os.path.join(
+        patched_dataset_dir,
+        f"{args.patch_params.get('information_metric')}_detection_window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
+        f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_{args.patch_params.get('detection_metric_type')}_{args.patch_params.get('metric_threshold')}_"
+        f"global_{args.score_strategy}_sorted_indices.pkl"
+    )
+
+    if os.path.exists(global_sorted_indices_file_path):
+        print(f"Loading existing global sorted indices from {global_sorted_indices_file_path}")
+        with open(global_sorted_indices_file_path, 'rb') as f:
+            global_sorted_indices = pickle.load(f)
+    else:
+        print(f"Generate global average indices from {len(patched_file_paths)} files...")
+        print('Calculating Scores for patches...')
+        scores_list = parallel_calculate_patches_scores(
+            patched_file_paths=patched_file_paths,
+            score_strategy=args.score_strategy,
+            workers=args.num_workers
+        )
+
+        print(f'Calculating global average {args.score_strategy} scores for {len(patched_file_paths)} files...')
+        avg_scores = calculate_average_scores(scores_list=scores_list)
+        global_sorted_indices = np.argsort(avg_scores)[::-1]
+
+        print(f"Saving global average {args.score_strategy} sorted indices to {global_sorted_indices_file_path}")
+        with open(global_sorted_indices_file_path, 'wb') as f:
+            pickle.dump(global_sorted_indices, f)
+
+    print(f"Selecting Top K Patches for {len(patched_file_paths)} files...")
+    parallel_select_top_k_patches(
+        patched_file_paths=patched_file_paths,
+        prefix=args.select_prefix,
+        sorted_indices=global_sorted_indices,
+        top_k=args.top_k,
+        workers=args.num_workers,
+    )
+
+    print('Top K Patches Selection Process Completed.')
