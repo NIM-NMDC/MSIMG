@@ -1,0 +1,19 @@
+# Patch Strategy
+grid:  # Grid Patching
+  patch_height: 224
+  patch_width: 224
+  overlap_row: 0
+  overlap_col: 0
+ics:  # Information Content Sampling Patching
+  information_metric: 'signal_mask'
+  information_map_window_size: 224
+  detection_window_height: 224
+  detection_window_width: 224
+  step_height: 224
+  step_width: 224
+  intensity_threshold: 0.001
+  detection_metric_type: 'mean'
+  metric_threshold: 0.01
+  patch_height: 224
+  patch_width: 224
+  padding_value: 0.0
