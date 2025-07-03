@@ -1,10 +1,29 @@
 import os
 import numpy as np
-import itertools
+import pickle
 from tqdm import tqdm
 from scipy import sparse, ndimage
+from pathlib import Path
 from functools import partial
 from multiprocessing import Pool
+
+
+def _create_save_path(file_path, prefix):
+    """
+    Create a save path based on the original file path and a prefix.
+    """
+    p = Path(file_path)
+
+    file_name = p.name
+    class_name = p.parent.name
+    class_parent_dir_name = p.parent.parent.name
+    dataset_dir = p.parent.parent.parent
+
+    new_dir_name = f"{prefix}_{class_parent_dir_name}"
+    save_dir = dataset_dir / new_dir_name / class_name
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / file_name
+    return save_path
 
 
 def get_normalized_image(raw_image):
@@ -111,7 +130,6 @@ def get_anchor_points(binned_file_path, patch_params):
         information_metric = patch_params.get('information_metric')
         information_map_window_size = patch_params.get('information_map_window_size', 16)
         # print(f"Calculating information map using {information_metric} with window size {information_map_window_size}x{information_map_window_size}")
-        information_map = None
         if information_metric == 'local_variance':
             information_map = calculate_local_variance_map(
                 image=normalized_image,
@@ -272,17 +290,7 @@ def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, glo
         if not (os.path.exists(binned_file_path) and os.path.getsize(binned_file_path) > 0):
             raise FileNotFoundError(f"File not found or empty: {binned_file_path}")
 
-        # /dataset_dir/{bin_prefix}/{class_name}/{bin_prefix}_file_name.npz
-        # /dataset_dir/{previous_prefix}/{class_name}/{bin_prefix}_file_name.npz
-        previous_prefix = os.path.basename(os.path.dirname(os.path.dirname(binned_file_path)))
-        class_name = os.path.basename(os.path.dirname(binned_file_path))
-        file_name = os.path.basename(binned_file_path)
-
-        dataset_dir = os.path.abspath(os.path.join(binned_file_path, '../../..'))
-        save_dir = os.path.join(dataset_dir, f'{prefix}_{previous_prefix}', class_name)
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, f'{prefix}_{file_name}')
-
+        save_path = _create_save_path(binned_file_path, prefix)
         if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
             return True
 
@@ -382,3 +390,55 @@ def parallel_generate_patches(
 
     success_rate = sum(results) / len(results)
     print(f"Patch generation completed. Success rate: {success_rate:.2%}")
+
+
+def process_patching(args, binned_dataset_dir, binned_file_paths):
+    """
+    Process the patching of binned MS files.
+    """
+    # Patching binned MS files
+    print('Patching binned MS Files...')
+
+    if args.patch_strategy == 'ics':
+        print('Using Information Content Sampling (ICS) for patch generation, creating global anchor points for patching.')
+        global_anchor_points_path = os.path.join(
+            binned_dataset_dir,
+            f"{args.patch_params.get('information_metric')}_detection_window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
+            f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_{args.patch_params.get('detection_metric_type')}_{args.patch_params.get('metric_threshold')}_"
+            f"global_anchor_points.pkl"
+        )
+
+        if os.path.exists(global_anchor_points_path):
+            print(f"Loading existing global anchor points from {global_anchor_points_path}")
+            with open(global_anchor_points_path, 'rb') as f:
+                global_anchor_points = pickle.load(f)
+        else:
+            print("Calculating global anchor points for ICS patching...")
+            anchor_points_lists = parallel_get_anchor_points(
+                binned_file_paths=binned_file_paths,
+                patch_params=args.patch_params,
+                workers=args.num_workers
+            )
+
+            print("Aggregating and deduplicate anchor points...")
+            global_anchor_points_set = set()
+            for anchor_points_list in anchor_points_lists:
+                global_anchor_points_set.update(tuple(anchor_point) for anchor_point in anchor_points_list)
+
+            global_anchor_points = np.array(list(global_anchor_points_set))
+            print(f"Saving global anchor points to {global_anchor_points_path}")
+            with open(global_anchor_points_path, 'wb') as f:
+                pickle.dump(global_anchor_points, f)
+
+            print(f"Total unique global anchor points: {len(global_anchor_points)}")
+
+    parallel_generate_patches(
+        binned_file_paths=binned_file_paths,
+        prefix=args.patch_prefix,
+        patch_strategy=args.patch_strategy,
+        patch_params=args.patch_params,
+        global_anchor_points=global_anchor_points if args.patch_strategy == 'ics' else None,
+        workers=args.num_workers
+    )
+
+    print('Patching Process Completed.')

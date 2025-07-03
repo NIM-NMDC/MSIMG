@@ -2,12 +2,10 @@ import re
 import numpy as np
 import pandas as pd
 
-from utils.split_utils import split_dataset_files_by_class_stratified, split_dataset_files_by_domain_class_stratified
-from utils.rasterize_ms import binning
-from datasets.transforms import build_base_transform, build_dynamic_transform
+from utils.bin_ms import binning
 
 
-def prepare_ms_dataset(dataset, label_mapping, mz_min, mz_max, bin_size):
+def load_ms_dataset(dataset, label_mapping, mz_min, mz_max, bin_size):
     """
     Prepare the mass spectrometry dataset using the specified m/z range and bin size.
 
@@ -42,7 +40,7 @@ def prepare_ms_dataset(dataset, label_mapping, mz_min, mz_max, bin_size):
     return np.array(binned_spectra), np.array(labels)
 
 
-def prepare_ms_img_dataset(dataset, label_mapping):
+def load_ms_img_dataset(dataset, label_mapping):
     """
     Prepare the mass spectrometry image dataset.
 
