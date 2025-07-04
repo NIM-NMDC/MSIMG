@@ -91,16 +91,7 @@ def train(
             early_stopping(epoch_valid_loss, model, save_model_dir=exp_base_dir, save_model_name=exp_model_name)
             if early_stopping.early_stop:
                 print('Early Stopping.')
-
-                if metrics_visualization:
-                    metrics = [
-                        (train_losses, valid_losses),
-                        (train_accuracies, valid_accuracies)
-                    ]
-                    plot_metrics(exp_base_dir, exp_model_name, metrics, ['Loss', 'Accuracy'])
-
                 break
-
         else:
             save_model_path = os.path.join(exp_base_dir, f'{exp_model_name}.pth')
 

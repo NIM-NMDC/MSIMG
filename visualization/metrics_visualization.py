@@ -24,7 +24,7 @@ def plot_metrics(save_dir, plot_title, metrics, titles):
     time_stamp = datetime.now().strftime('%Y%m%d%H%M%S')
     metrics_file_path = os.path.join(save_dir, f"{plot_title}_train_valid_metrics_plot_{time_stamp}.png")
     plt.savefig(metrics_file_path)
-    plt.show()
+    # plt.show()
     plt.close()
 
 
@@ -44,7 +44,7 @@ def plot_confusion_matrix(targets, predicts, label_mapping, plot_title, save_dir
     time_stamp = datetime.now().strftime('%Y%m%d%H%M%S')
     cm_file_path = os.path.join(save_dir, f"{plot_title.split('.')[0]}_confusion_matrix_plot_{time_stamp}.png")
     plt.savefig(cm_file_path)
-    plt.show()
+    # plt.show()
     plt.close()
 
 
@@ -80,5 +80,5 @@ def plot_roc_auc_curve(targets, predicts, label_mapping, plot_title, save_dir):
     time_stamp = datetime.now().strftime('%Y%m%d%H%M%S')
     roc_auc_file_path = os.path.join(save_dir, f"{plot_title}_roc_auc_plot_{time_stamp}.png")
     plt.savefig(roc_auc_file_path)
-    plt.show()
+    # plt.show()
     plt.close()

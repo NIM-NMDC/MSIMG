@@ -19,6 +19,8 @@ from utils.patch_ms import process_patching
 from utils.select_patches import process_patch_selection
 from datasets.datasets import MSIMGDataset
 from models.resnet_2d import build_resnet_2d
+from models.swin_transformer import build_swin_transformer
+from models.hierarchically_guided_swin_transformer import build_hierarchically_guided_swin_transformer
 from callbacks.early_stopping import EarlyStopping
 from utils.data_loader import load_ms_img_dataset
 from utils.train_utils import train, test
@@ -62,15 +64,18 @@ def load_params_from_yaml(file_path, key=None):
         return params
 
 
-def _update_file_path(original_file_path, prefix):
+def _update_file_path(file_instance: dict, prefix: str) -> dict:
     """
     Update the file path by replacing the prefix with the new prefix.
     Example: 'dataset/old_prefix/class/file.npz' to 'dataset/new_prefix/class/file.npz'.
 
-    :param original_file_path: Original file path.
+    :param file_instance: Dictionary containing the file information.
     :param prefix: New prefix to replace the original prefix.
     :return: Updated file path.
     """
+    if 'file_path' not in file_instance:
+        raise KeyError("The input dictionary must contain the 'file_path' key.")
+    original_file_path = file_instance['file_path']
     p = Path(original_file_path)
     need_to_change_dir = p.parent.parent
     base_dir = need_to_change_dir.parent
@@ -78,7 +83,11 @@ def _update_file_path(original_file_path, prefix):
     new_dir_name = f"{prefix}_{original_dir_name}"
     remaining_path = p.relative_to(need_to_change_dir)
     new_path = base_dir / new_dir_name / remaining_path
-    return str(new_path)
+    new_path = str(new_path)
+
+    updated_file_instance = file_instance.copy()
+    updated_file_instance['file_path'] = new_path
+    return updated_file_instance
 
 
 def _create_dataset(patches_list, positions_list, padding_mask_list, labels, return_positions, transform=None):
@@ -103,21 +112,21 @@ def run_experiment(args):
         random_seed=args.random_seed
     )
 
-    patched_train_set = [_update_file_path(file_path, args.patch_prefix) for file_path in train_set]
-    patched_test_set = [_update_file_path(file_path, args.patch_prefix) for file_path in test_set]
-    is_patched_files_exist = all(Path(file_path).exists() for file_path in (patched_train_set + patched_test_set))
+    patched_train_set = [_update_file_path(file_instance, args.patch_prefix) for file_instance in train_set]
+    patched_test_set = [_update_file_path(file_instance, args.patch_prefix) for file_instance in test_set]
+    is_patched_files_exist = all(Path(file_instance['file_path']).exists() for file_instance in (patched_train_set + patched_test_set))
 
     if is_patched_files_exist:
         print("Skipping patching processing steps.")
     else:
         print('Processing Patching...')
         binned_dataset_dir = args.dataset_dir
-        process_patching(args, binned_dataset_dir=binned_dataset_dir, binned_file_paths=train_set)
-        process_patching(args, binned_dataset_dir=binned_dataset_dir, binned_file_paths=test_set)
+        process_patching(args, binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in train_set])
+        process_patching(args, binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in test_set])
 
-    selected_train_set = [_update_file_path(file_path, args.select_prefix) for file_path in patched_train_set]
-    selected_test_set = [_update_file_path(file_path, args.select_prefix) for file_path in patched_test_set]
-    is_selected_files_exist = all(Path(file_path).exists() for file_path in (selected_train_set + selected_test_set))
+    selected_train_set = [_update_file_path(file_instance, args.select_prefix) for file_instance in patched_train_set]
+    selected_test_set = [_update_file_path(file_instance, args.select_prefix) for file_instance in patched_test_set]
+    is_selected_files_exist = all(Path(file_instance['file_path']).exists() for file_instance in (selected_train_set + selected_test_set))
 
     if is_selected_files_exist:
         print("Skipping patch selection processing steps.")
@@ -126,14 +135,14 @@ def run_experiment(args):
         dir_name = os.path.dirname(args.dataset_dir)
         base_name = os.path.basename(args.dataset_dir)
         patched_dataset_dir = os.path.join(dir_name, f"{args.patch_prefix}_{base_name}")
-        process_patch_selection(args, patched_dataset_dir=patched_dataset_dir, patched_file_paths=patched_train_set)
-        process_patch_selection(args, patched_dataset_dir=patched_dataset_dir, patched_file_paths=patched_test_set)
+        process_patch_selection(args, patched_dataset_dir=patched_dataset_dir, patched_file_paths=[file_instance['file_path'] for file_instance in patched_train_set])
+        process_patch_selection(args, patched_dataset_dir=patched_dataset_dir, patched_file_paths=[file_instance['file_path'] for file_instance in patched_test_set])
 
     train_patches_list, train_positions_list, train_padding_mask_list, train_labels = load_ms_img_dataset(dataset=selected_train_set, label_mapping=args.label_mapping)
     test_patches_list, test_positions_list, test_padding_mask_list, test_labels = load_ms_img_dataset(dataset=selected_test_set, label_mapping=args.label_mapping)
 
-    exp_dir_name = (f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_"
-                    f"in_channels_{args.top_k}_patch_{args.patch_height}x{args.patch_width}_batch_size_{args.batch_size}")
+    exp_dir_name = (f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}_"
+                    f"patch_{args.patch_params.get('patch_height')}x{args.patch_params.get('patch_width')}_batch_size_{args.batch_size}")
     print(exp_dir_name)
     exp_base_dir = os.path.join(args.save_dir, exp_dir_name)
 
@@ -160,8 +169,12 @@ def run_experiment(args):
         if 'ResNet' in args.model_name:
             model = build_resnet_2d(args)
             return_positions = False
-        elif 'ViT' in args.model_name:
-            return_positions = True
+        elif 'Swin' in args.model_name:
+            if 'HG' in args.model_name:
+                model = build_hierarchically_guided_swin_transformer(args)
+            else:
+                model = build_swin_transformer(args)
+            return_positions = False
 
         if args.use_multi_gpu and torch.cuda.device_count() > 1:
             print(f'Using {torch.cuda.device_count()} GPUs for training.')
@@ -194,7 +207,8 @@ def run_experiment(args):
             ),
             batch_size=args.batch_size,
             shuffle=True,
-            num_workers=args.num_workers
+            num_workers=args.num_workers,
+            pin_memory=True
         )
         valid_loader = DataLoader(
             _create_dataset(
@@ -207,7 +221,8 @@ def run_experiment(args):
             ),
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=args.num_workers
+            num_workers=args.num_workers,
+            pin_memory=True
         )
         test_loader = DataLoader(
             _create_dataset(
@@ -220,7 +235,8 @@ def run_experiment(args):
             ),
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=args.num_workers
+            num_workers=args.num_workers,
+            pin_memory=True
         )
 
         train(
@@ -291,17 +307,16 @@ def main():
     parser.add_argument('--save_dir', type=str, default='checkpoints', help='Directory to save checkpoints')
     parser.add_argument('--model_name', type=str, default='ResNet50', help='Model name')
     parser.add_argument('--dataset_name', type=str, help='Dataset to use')
-    parser.add_argument('--label_maps', nargs='+', help='List of label maps to use (e.g. HC=0 CD=1 UC=2)')
 
     parser.add_argument('--patch_strategy', type=str, required=True, choices=['grid', 'ics'], help='Strategy to generate patches (e.g., grid, ics)')
     parser.add_argument('--score_strategy', type=str, default='entropy', choices=['entropy', 'mean'], help='Strategy to calculate patch scores (e.g. Entropy: 1D image entropy, Mean: mean intensity, Random: random selection)')
     parser.add_argument('--top_k', type=int, default=256, help='Number of patches to be selected')
 
-    parser.add_argument('--k_folds', type=int, default=6, help='Number of patches to be selected')
+    parser.add_argument('--k_folds', type=int, default=4, help='Number of patches to be selected')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
     parser.add_argument('--epochs', type=int, default=64, help='Number of epochs')
     parser.add_argument('--device', type=str, default=None, help='Device to use')
-    parser.add_argument('--num_workers', type=int, default=32, help='Number of workers for DataLoader')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
     parser.add_argument('--pretrained', action='store_true', help='Use pretrained model')
     parser.add_argument('--use_multi_gpu', action='store_true', help='Use multiple GPUs')
     parser.add_argument('--use_early_stopping', action='store_true', help='Use early stopping')
@@ -312,6 +327,7 @@ def main():
 
     if args.device is None:
         args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {args.device}")
 
     if args.use_multi_gpu:
         args.device = torch.device("cuda:0")
@@ -342,7 +358,7 @@ def main():
     args.select_prefix = f'{args.score_strategy}_top_{args.top_k}' if args.score_strategy != 'random' else f'{args.score_strategy}_{args.top_k}'
 
     dataset_dict = {
-        'RCC': f"datasets/RCC/positive/{args.bin_prefix}",
+        'RCC': f"datasets/RCC/Positive/{args.bin_prefix}",
         # 'PXD10371': f"{dataset_parent_dir}/PXD10371",
     }
     dataset_dir = os.path.join(args.root_dir, dataset_dict[args.dataset_name])
@@ -350,16 +366,7 @@ def main():
         raise FileNotFoundError(f"Dataset directory {dataset_dir} does not exist.")
     args.dataset_dir = dataset_dir
 
-    label_mapping = {}
-    if args.label_maps:
-        for pair in args.label_maps:
-            label, value = pair.split('=')
-            if value.isdigit():
-                label_mapping[label] = int(value)
-            else:
-                raise ValueError(f"Invalid label mapping: {pair}. Value must be an integer.")
-    else:
-        label_mapping = {'HC': 0, 'CD': 1, 'UC': 2}
+    label_mapping = dataset_params.get('label_mapping')
 
     args.label_mapping = label_mapping
     args.num_classes = len(label_mapping)

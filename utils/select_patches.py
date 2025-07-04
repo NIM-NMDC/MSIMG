@@ -114,12 +114,21 @@ def process_patch_selection(args, patched_dataset_dir, patched_file_paths):
     # Selecting Top K Patches
     print('Selecting Top K Patches...')
     print(f'Generating global sorted indices using {args.score_strategy} scores...')
-    global_sorted_indices_file_path = os.path.join(
-        patched_dataset_dir,
-        f"{args.patch_params.get('information_metric')}_detection_window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
-        f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_{args.patch_params.get('detection_metric_type')}_{args.patch_params.get('metric_threshold')}_"
-        f"global_{args.score_strategy}_sorted_indices.pkl"
-    )
+    patch_params = args.patch_params
+    if args.patch_strategy == 'ics':
+        global_sorted_indices_file_path = os.path.join(
+            patched_dataset_dir,
+            f"{patch_params.get('information_metric')}_detection_window_{patch_params.get('detection_window_height')}x{patch_params.get('detection_window_width')}_"
+            f"step_{patch_params.get('step_height')}x{patch_params.get('step_width')}_{patch_params.get('detection_metric_type')}_{patch_params.get('metric_threshold')}_"
+            f"global_{args.score_strategy}_sorted_indices.pkl"
+        )
+    elif args.patch_strategy == 'grid':
+        global_sorted_indices_file_path = os.path.join(
+            patched_dataset_dir,
+            f"{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_global_{args.score_strategy}_sorted_indices.pkl"
+        )
+    else:
+        raise ValueError(f"Unknown patch strategy '{args.patch_strategy}'")
 
     if os.path.exists(global_sorted_indices_file_path):
         print(f"Loading existing global sorted indices from {global_sorted_indices_file_path}")
