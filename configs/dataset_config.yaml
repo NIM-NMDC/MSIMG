@@ -1,7 +1,7 @@
 RCC:
-  min_mz: 70.0
-  max_mz: 1060.0
-  bin_size: 0.01
+  mz_min: 70.0
+  mz_max: 1060.0
+  bin_size: 0.1
   label_mapping:
     Control: 0
     RCC: 1

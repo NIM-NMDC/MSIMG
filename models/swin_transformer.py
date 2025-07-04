@@ -614,7 +614,7 @@ def build_swin_transformer(args):
     model = SwinTransformer(
         img_size=getattr(args, 'img_size', 224),
         patch_size=getattr(args, 'patch_size', 4),
-        in_chans=getattr(args, 'in_chans', 3),
+        in_chans=getattr(args, 'in_channels', 3),
         num_classes=getattr(args, 'num_classes', 1000),
         embed_dim=config['embed_dim'],
         depths=config['depths'],
