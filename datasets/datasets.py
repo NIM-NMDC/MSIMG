@@ -58,6 +58,8 @@ class MSIMGDataset(Dataset):
     def __getitem__(self, idx):
         patches = self.patches_list[idx]
         label = self.labels[idx]
+        patches = torch.tensor(patches, dtype=torch.float32)
+        label = torch.tensor(label, dtype=torch.long)
 
         if self.transform:
             patches = self.transform(patches)
@@ -65,13 +67,13 @@ class MSIMGDataset(Dataset):
         if self.return_positions:
             positions = self.positions_list[idx]
             padding_mask = self.padding_mask_list[idx]
-            return torch.tensor(patches, dtype=torch.float32), \
+            return patches, \
                    torch.tensor(positions, dtype=torch.float32), \
                    torch.tensor(padding_mask, dtype=torch.bool), \
-                   torch.tensor(label, dtype=torch.long)
+                   label
         else:
-            return torch.tensor(patches, dtype=torch.float32), \
-                   torch.tensor(label, dtype=torch.long)
+            return patches, \
+                   label
 
 
 

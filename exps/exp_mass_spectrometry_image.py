@@ -17,6 +17,7 @@ from utils.file_utils import get_file_paths_grouped_by_class
 from utils.split_utils import split_dataset_files_by_class_stratified
 from utils.patch_ms import process_patching
 from utils.select_patches import process_patch_selection
+from datasets.transforms import get_augmentation_pipeline
 from datasets.datasets import MSIMGDataset
 from models.resnet_2d import build_resnet_2d
 from models.swin_transformer import build_swin_transformer
@@ -141,8 +142,8 @@ def run_experiment(args):
     train_patches_list, train_positions_list, train_padding_mask_list, train_labels = load_ms_img_dataset(dataset=selected_train_set, label_mapping=args.label_mapping)
     test_patches_list, test_positions_list, test_padding_mask_list, test_labels = load_ms_img_dataset(dataset=selected_test_set, label_mapping=args.label_mapping)
 
-    exp_dir_name = (f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}_"
-                    f"patch_{args.patch_params.get('patch_height')}x{args.patch_params.get('patch_width')}_batch_size_{args.batch_size}")
+    exp_dir_name = (f"{args.model_name}_{args.dataset_name}_{args.patch_strategy}_{args.generate_strategy}_patch_{args.patch_params.get('patch_height')}x{args.patch_params.get('patch_width')}_"
+                    f"num_classes_{args.num_classes}_in_channels_{args.top_k}_batch_size_{args.batch_size}")
     print(exp_dir_name)
     exp_base_dir = os.path.join(args.save_dir, exp_dir_name)
 
@@ -188,7 +189,7 @@ def run_experiment(args):
         class_weights = torch.tensor(class_weights, dtype=torch.float32, device=args.device)
         criterion = nn.CrossEntropyLoss(weight=class_weights)
         # criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+        optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-32)
 
         if args.use_early_stopping:
@@ -203,7 +204,7 @@ def run_experiment(args):
                 padding_mask_list=train_fold_padding_mask_list,
                 labels=train_fold_labels,
                 return_positions=return_positions,
-                transform=None
+                transform=get_augmentation_pipeline()
             ),
             batch_size=args.batch_size,
             shuffle=True,
@@ -308,7 +309,8 @@ def main():
     parser.add_argument('--model_name', type=str, default='ResNet50', help='Model name')
     parser.add_argument('--dataset_name', type=str, help='Dataset to use')
 
-    parser.add_argument('--patch_strategy', type=str, required=True, choices=['grid', 'ics'], help='Strategy to generate patches (e.g., grid, ics)')
+    parser.add_argument('--patch_strategy', type=str, required=True, choices=['grid', 'dnms'], help='Strategy to generate patches (e.g., grid, dnms)')
+    parser.add_argument('--generate_strategy', type=str, required=True, choices=['per_file', 'global'], help='Strategy to build multi-channel image from patches (e.g., pre_file, global)')
     parser.add_argument('--score_strategy', type=str, default='entropy', choices=['entropy', 'mean'], help='Strategy to calculate patch scores (e.g. Entropy: 1D image entropy, Mean: mean intensity, Random: random selection)')
     parser.add_argument('--top_k', type=int, default=256, help='Number of patches to be selected')
 
@@ -344,21 +346,22 @@ def main():
     args.bin_prefix = f"mz_{dataset_params.get('mz_min')}-{dataset_params.get('mz_max')}_bin_size_{dataset_params.get('bin_size')}"
 
     patch_params = load_params_from_yaml('../configs/patch_config.yaml', key=args.patch_strategy)
+    args.patch_params = patch_params
     if patch_params is None:
         raise ValueError(f"Patch parameters for strategy '{args.patch_strategy}' not found in the YAML file.")
     if args.patch_strategy == 'grid':
-        args.patch_prefix = f"{args.patch_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_overlap_{patch_params.get('overlap_row')}x{patch_params.get('overlap_col')}"
-        args.patch_params = patch_params
-    elif args.patch_strategy == 'ics':
-        args.patch_prefix = f"{patch_params.get('information_metric')}_{args.patch_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_{patch_params.get('detection_metric_type')}_{patch_params.get('metric_threshold')}"
-        args.patch_params = patch_params
+        args.patch_prefix = f"{args.patch_strategy}_{args.generate_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_overlap_{patch_params.get('overlap_row')}x{patch_params.get('overlap_col')}"
+    elif args.patch_strategy == 'dnms':
+        args.patch_prefix = (f"{args.patch_strategy}_{args.generate_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_"
+                             f"intensity_thr_{patch_params.get('intensity_threshold')}_min_density_thr_{patch_params.get('min_density_threshold')}_min_peak_dist_{patch_params.get('min_peak_distance')}")
     else:
-        raise ValueError(f"Invalid patch strategy: {args.patch_strategy}. Supported strategies are 'ics' and 'grid'.")
+        raise ValueError(f"Invalid patch strategy: {args.patch_strategy}. Supported strategies are 'grid' and 'dnms'.")
 
-    args.select_prefix = f'{args.score_strategy}_top_{args.top_k}' if args.score_strategy != 'random' else f'{args.score_strategy}_{args.top_k}'
+    args.select_prefix = f'{args.score_strategy}_top_{args.top_k}'
 
     dataset_dict = {
         'RCC': f"datasets/RCC/Positive/{args.bin_prefix}",
+        'ST003313': f"datasets/St003313/{args.bin_prefix}"
         # 'PXD10371': f"{dataset_parent_dir}/PXD10371",
     }
     dataset_dir = os.path.join(args.root_dir, dataset_dict[args.dataset_name])

@@ -5,3 +5,10 @@ RCC:
   label_mapping:
     Control: 0
     RCC: 1
+ST003313:
+  mz_min: 65.0
+  mz_max: 1010.0
+  bin_size: 0.1
+  label_mapping:
+    Control: 0
+    CD: 1

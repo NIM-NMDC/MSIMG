@@ -6,6 +6,7 @@ from scipy import sparse, ndimage
 from pathlib import Path
 from functools import partial
 from multiprocessing import Pool
+from sklearn.cluster import DBSCAN
 
 
 def _create_save_path(file_path, prefix):
@@ -48,74 +49,64 @@ def get_normalized_image(raw_image):
     return normalized_image
 
 
-def calculate_local_variance_map(image, window_size):
+def calculate_density_map(image, window_size, intensity_threshold=0):
     """
-    Use uniform filter to efficiently calculate local variance maps.
+    Calculate a density map from a pseudo 2D ms image.
+    The density at a pixel is the number of signal pixels (above intensity_threshold) within a window of 'window_size' centered at that pixel.
+
+    :param image: Normalized pseudo MS image (2D array).
+    :param window_size: Sliding window size in pixels.
+    :param intensity_threshold: The threshold to consider a pixel as signal.
+    :return: A 2D array representing the density map.
     """
-    mean_sq = ndimage.uniform_filter(image ** 2, size=window_size, mode='reflect')
-    mean_val = ndimage.uniform_filter(image, size=window_size, mode='reflect')
-    sq_mean = mean_val ** 2
-    variance_map = mean_sq - sq_mean
-    variance_map = np.maximum(variance_map, 0)
-    return variance_map
+    signal_mask = (image > 0).astype(np.float32) if intensity_threshold <= 0 else (image > intensity_threshold).astype(np.float32)
+    # uniform_filter calculates the mean, so multiply by window area to get the sum (count)
+    window_area = window_size * window_size
+    density_map = ndimage.uniform_filter(signal_mask, size=window_size, mode='reflect') * window_area
+    return density_map
 
 
-def calculate_signal_mask_map(image, window_size, intensity_threshold=0.01):
+def non_maximum_suppression(density_map, num_patches, suppression_window_size, min_density_threshold=1):
     """
-    Calculate the signal mask map of the image.
-    The occupancy map is a binary map where pixels above the intensity threshold are marked as occupied.
+    Performs Non-Maximum Suppression on a density map to find the top N densest patch centers.
+
+    :param density_map: 2D array where each value is the density score.
+    :param num_patches: The maximum number of patches (peaks) to find.
+    :param suppression_window_size: A tuple (height, width) of the area to suppress around a found peak. This should typically be the patch size.
+    :param min_density_threshold: The minimum density score for a peak to be considered.
+    :return: A numpy array of shape (N, 2) containing the (row, col) coordinates of the peaks.
     """
-    signal_mask = (image > intensity_threshold).astype(np.float32)
-    return signal_mask
-    # occupancy_map = ndimage.uniform_filter(signal_mask, size=window_size, mode='reflect')
-    # return occupancy_map
+    H, W = suppression_window_size
+    h_half_floor = H // 2
+    w_half_floor = W // 2
+    h_half_ceil = H - h_half_floor
+    w_half_ceil = W - w_half_floor
+
+    temp_map = np.copy(density_map)
+    peak_coords = []
+
+    for _ in range(num_patches):
+        max_val = np.max(temp_map)
+
+        if max_val < min_density_threshold:
+            break
+
+        # find the coordinates of the peak
+        coords = np.unravel_index(np.argmax(temp_map), temp_map.shape)
+        peak_coords.append(coords)
+
+        # suppress the area around the peak
+        row_center, col_center = coords
+        row_start = max(0, row_center - h_half_floor)
+        row_end = min(temp_map.shape[0], row_center + h_half_ceil)
+        col_start = max(0, col_center - w_half_floor)
+        col_end = min(temp_map.shape[1], col_center + w_half_ceil)
+
+        temp_map[row_start:row_end, col_start:col_end] = 0
+    return np.array(peak_coords, dtype=int)
 
 
-def information_content_sampling(information_map, detection_window_height, detection_window_width, step_height, step_width, detection_metric_type='mean', metric_threshold=0.05):
-    """
-    Perform Information Content Sampling (ICS) on the information map to select patches.
-    Using a sliding window on the information map to find the center point of the area where the information content is above the threshold.
-
-    :param information_map: 2D array representing the information content of the image.
-    :param detection_window_height: Height of the sampling window.
-    :param detection_window_width: Width of the sampling window.
-    :param step_height: Vertical step size for sliding the window.
-    :param step_width: Horizontal step size for sliding the window.
-    :param detection_metric_type: Metric to use for sampling ('mean', 'max', 'min').
-    :param metric_threshold: Threshold value for the detection metric.
-    :return: List of coordinates where patches are sampled.
-    """
-    assert detection_metric_type in ['mean', 'max', 'min'], "metric_type must be one of ['mean', 'max', 'min']"
-
-    H, W = information_map.shape
-    anchor_point_coords = []
-
-    for row_start in range(0, H - detection_window_height + 1, step_height):
-        for col_start in range(0, W - detection_window_width + 1, step_width):
-            row_end = row_start + detection_window_height
-            col_end = col_start + detection_window_width
-
-            window_on_info_map = information_map[row_start:row_end, col_start:col_end]
-
-            metric_value = 0
-            if detection_metric_type == 'mean':
-                metric_value = np.mean(window_on_info_map)
-            elif detection_metric_type == 'max':
-                metric_value = np.max(window_on_info_map)
-            elif detection_metric_type == 'min':
-                metric_value = np.min(window_on_info_map)
-            else:
-                raise ValueError(f"Unsupported metric type: {detection_metric_type}. Choose 'mean' or 'max'.")
-
-            if metric_value >= metric_threshold:
-                row_center = row_start + detection_window_height // 2
-                col_center = col_start + detection_window_width // 2
-                anchor_point_coords.append((row_center, col_center))
-
-    return np.array(anchor_point_coords, dtype=int)
-
-
-def get_anchor_points(binned_file_path, patch_params):
+def get_peak_coords(binned_file_path, patch_params):
     """
     Extracts anchor points from a binned file based on the patch parameters.
     """
@@ -126,62 +117,31 @@ def get_anchor_points(binned_file_path, patch_params):
         sparse_matrix = sparse.load_npz(binned_file_path)
         raw_image = sparse_matrix.toarray()
         normalized_image = get_normalized_image(raw_image)
-
-        information_metric = patch_params.get('information_metric')
-        information_map_window_size = patch_params.get('information_map_window_size', 16)
-        # print(f"Calculating information map using {information_metric} with window size {information_map_window_size}x{information_map_window_size}")
-        if information_metric == 'local_variance':
-            information_map = calculate_local_variance_map(
-                image=normalized_image,
-                window_size=(information_map_window_size, information_map_window_size)
-            )
-
-            map_min, map_max = np.min(information_map), np.max(information_map)
-            if map_max > map_min:
-                information_map = (information_map - map_min) / (map_max - map_min)
-            else:
-                raise ValueError(f"Information map is constant in {binned_file_path}")
-        elif information_metric == 'signal_mask':
-            information_map = calculate_signal_mask_map(
-                image=normalized_image,
-                window_size=(information_map_window_size, information_map_window_size),
-                intensity_threshold=patch_params.get('intensity_threshold', 0.01)
-            )
-        else:
-            raise ValueError(f"Unsupported information metric: {information_metric}. Choose 'local_variance' or 'signal_occupancy'.")
-
-        detection_window_height = patch_params.get('detection_window_height', 32)
-        detection_window_width = patch_params.get('detection_window_width', 32)
-        step_height = patch_params.get('step_height')
-        step_width = patch_params.get('step_width')
-        if step_height == 0 or step_height < 0:
-            step_height = detection_window_height
-        if step_width == 0 or step_width < 0:
-            step_width = detection_window_width
-
-        anchor_points = information_content_sampling(
-            information_map=information_map,
-            detection_window_height=detection_window_height,
-            detection_window_width=detection_window_width,
-            step_height=step_height,
-            step_width=step_width,
-            detection_metric_type=patch_params.get('detection_metric_type', 'mean'),
-            metric_threshold=patch_params.get('metric_threshold', 0.05)
+        density_map = calculate_density_map(
+            image=normalized_image,
+            window_size=patch_params.get('window_size'),
+            intensity_threshold=patch_params.get('intensity_threshold', 0)
+        )
+        peak_coords = non_maximum_suppression(
+            density_map=density_map,
+            num_patches=patch_params['num_patches'],
+            suppression_window_size=(patch_params['patch_height'], patch_params['patch_width']),
+            min_density_threshold=patch_params.get('min_density_threshold', 1)
         )
 
-        return anchor_points
+        return peak_coords
     except Exception as e:
         raise RuntimeError(f"Error processing {binned_file_path}: {e}")
 
 
-def parallel_get_anchor_points(binned_file_paths, patch_params, workers=4):
+def parallel_get_peak_coords(binned_file_paths, patch_params, workers=4):
     """
     Extract anchor points from multiple binned files in parallel.
     """
     print(f"Starting parallel anchor point extraction for {len(binned_file_paths)} files...")
     with Pool(processes=workers) as pool:
         worker = partial(
-            get_anchor_points,
+            get_peak_coords,
             patch_params=patch_params
         )
 
@@ -189,7 +149,7 @@ def parallel_get_anchor_points(binned_file_paths, patch_params, workers=4):
             tqdm(
                 pool.imap_unordered(worker, binned_file_paths),
                 total=len(binned_file_paths),
-                desc='Calculating Information Content Sampling (ICS) anchor points'
+                desc='Calculating peak coordinates'
             )
         )
 
@@ -285,7 +245,7 @@ def point_patching(image, point_coords, patch_height, patch_width, padding_value
     return np.array(patches), np.array(positions)
 
 
-def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, global_anchor_points=None):
+def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, peak_coords=None):
     try:
         if not (os.path.exists(binned_file_path) and os.path.getsize(binned_file_path) > 0):
             raise FileNotFoundError(f"File not found or empty: {binned_file_path}")
@@ -306,47 +266,19 @@ def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, glo
                 overlap_row=patch_params.get('overlap_row'),
                 overlap_col=patch_params.get('overlap_col')
             )
-        elif patch_strategy == 'ics':
-            # ics_window_size = patch_params.get('ics_window_size', 16)
-            #
-            # information_map = calculate_local_variance_map(image=normalized_image, window_size=(ics_window_size, ics_window_size))
-            # map_min, map_max = np.min(information_map), np.max(information_map)
-            # if map_max > map_min:
-            #     normalized_information_map = (information_map - map_min) / (map_max - map_min)
-            # else:
-            #     raise ValueError(f"Information map is constant in {binned_file_path}")
-            #
-            # detection_window_height = patch_params.get('detection_window_height', 32)
-            # detection_window_width = patch_params.get('detection_window_width', 32)
-            # step_height = patch_params.get('step_height')
-            # step_width = patch_params.get('step_width')
-            # if step_height == 0 or step_height < 0:
-            #     step_height = detection_window_height
-            # if step_width == 0 or step_width < 0:
-            #     step_width = detection_window_width
-            #
-            # anchor_points = information_content_sampling(
-            #     information_map=normalized_information_map,
-            #     detection_window_height=detection_window_height,
-            #     detection_window_width=detection_window_width,
-            #     step_height=step_height,
-            #     step_width=step_width,
-            #     detection_metric_type=patch_params.get('detection_metric_type', 'mean'),
-            #     threshold=patch_params.get('threshold', 0.3)
-            # )
-
-            if global_anchor_points is not None:
+        elif patch_strategy == 'dnms':
+            if peak_coords is not None:
                 patches, positions = point_patching(
                     image=normalized_image,
-                    point_coords=global_anchor_points,
+                    point_coords=peak_coords,
                     patch_height=patch_params.get('patch_height'),
                     patch_width=patch_params.get('patch_width'),
                     padding_value=patch_params.get('padding_value')
                 )
             else:
-                raise ValueError("Global anchor points must be provided for ICS patching.")
+                raise ValueError("Peak Coordinates must be provided for DNMS patching.")
         else:
-            raise ValueError(f'Invalid patch strategy: {patch_strategy}. Choose either "grid" or "pcp".')
+            raise ValueError(f'Invalid patch strategy: {patch_strategy}. Choose either "grid" or "dnms".')
 
         np.savez_compressed(save_path, patches=patches, positions=positions)
         return True
@@ -354,21 +286,19 @@ def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, glo
         raise RuntimeError(f"Error processing {binned_file_path}: {e}")
 
 
-def parallel_generate_patches(
-        binned_file_paths, prefix, patch_strategy, patch_params, global_anchor_points=None, workers=4
-):
+def parallel_generate_patches(binned_file_paths, prefix, patch_strategy, patch_params, peak_coords=None, workers=4):
     """
     Generate patches from pseudo MS images in parallel.
 
     :param binned_file_paths: List of file paths to the pseudo MS images.
     :param prefix: Prefix for the save path pattern.
-    :param patch_strategy: Strategy to extract patches ('grid' or 'ics').
+    :param patch_strategy: Strategy to extract patches ('grid' or 'dnms').
     :param patch_params: Dictionary containing parameters for patch generation.
-    :param global_anchor_points: Global anchor points for ICS patching, if applicable.
+    :param peak_coords: Peak coordinates for point patching, if applicable.
     :param workers: Number of worker processes to use.
     """
-    if patch_strategy not in ['grid', 'ics']:
-        raise ValueError('Invalid strategy. Choose either "grid" or "ics".')
+    if patch_strategy not in ['grid', 'dnms']:
+        raise ValueError('Invalid strategy. Choose either "grid" or "dnms".')
 
     print(f"Starting parallel patch generation for {len(binned_file_paths)} files using '{patch_strategy}' strategy...")
     with Pool(processes=workers) as pool:
@@ -377,7 +307,7 @@ def parallel_generate_patches(
             prefix=prefix,
             patch_strategy=patch_strategy,
             patch_params=patch_params,
-            global_anchor_points=global_anchor_points
+            peak_coords=peak_coords,
         )
 
         results = list(
@@ -392,6 +322,31 @@ def parallel_generate_patches(
     print(f"Patch generation completed. Success rate: {success_rate:.2%}")
 
 
+def filter_coords_by_dbscan(coords, eps, min_samples=1):
+    """
+    Filter coordinates using DBSCAN clustering to remove noise.
+
+    :param coords: Array of coordinates to filter.
+    :param eps: The maximum distance between two samples for one to be considered as in the neighborhood of the other.
+    :param min_samples: The number of samples in a neighborhood for a point to be considered as a core point.
+    :return: Filtered coordinates after applying DBSCAN.
+    """
+    if coords.shape[0] == 0:
+        raise ValueError('Empty array')
+
+    db = DBSCAN(eps=eps, min_samples=min_samples).fit(coords)
+    labels = db.labels_
+
+    merged_coords = []
+    for label in set(labels):
+        points_in_cluster_mask = (labels == label)
+        points_in_cluster = coords[points_in_cluster_mask]
+        centroid = np.mean(points_in_cluster, axis=0)
+        merged_coords.append(centroid)
+
+    return np.array(merged_coords, dtype=int)
+
+
 def process_patching(args, binned_dataset_dir, binned_file_paths):
     """
     Process the patching of binned MS files.
@@ -399,46 +354,74 @@ def process_patching(args, binned_dataset_dir, binned_file_paths):
     # Patching binned MS files
     print('Patching binned MS Files...')
 
-    if args.patch_strategy == 'ics':
-        print('Using Information Content Sampling (ICS) for patch generation, creating global anchor points for patching.')
-        global_anchor_points_path = os.path.join(
-            binned_dataset_dir,
-            f"{args.patch_params.get('information_metric')}_detection_window_{args.patch_params.get('detection_window_height')}x{args.patch_params.get('detection_window_width')}_"
-            f"step_{args.patch_params.get('step_height')}x{args.patch_params.get('step_width')}_{args.patch_params.get('detection_metric_type')}_{args.patch_params.get('metric_threshold')}_"
-            f"global_anchor_points.pkl"
-        )
-
-        if os.path.exists(global_anchor_points_path):
-            print(f"Loading existing global anchor points from {global_anchor_points_path}")
-            with open(global_anchor_points_path, 'rb') as f:
-                global_anchor_points = pickle.load(f)
-        else:
-            print("Calculating global anchor points for ICS patching...")
-            anchor_points_lists = parallel_get_anchor_points(
-                binned_file_paths=binned_file_paths,
-                patch_params=args.patch_params,
-                workers=args.num_workers
+    if args.patch_strategy == 'dnms':
+        if args.generate_strategy == 'per_file':
+            print('Using per-file patch generation strategy.')
+            for binned_file_path in tqdm(binned_file_paths, desc="Generating Patches"):
+                peak_coords = get_peak_coords(
+                    binned_file_path=binned_file_path,
+                    patch_params=args.patch_params
+                )
+                generate_patches(
+                    binned_file_path=binned_file_path,
+                    prefix=args.patch_prefix,
+                    patch_strategy=args.patch_strategy,
+                    patch_params=args.patch_params,
+                    peak_coords=peak_coords,
+                )
+        elif args.generate_strategy == 'global':
+            print('Using Density Map with Non-Maximum Suppression, creating global peak coordinates for patching.')
+            global_peak_coords_path = os.path.join(
+                binned_dataset_dir,
+                f"{args.patch_strategy}_intensity_thr_{args.patch_params.get('intensity_threshold')}_min_density_thr_{args.patch_params.get('min_density_threshold')}_"
+                f"min_peak_dist_{args.patch_params.get('min_peak_distance')}_global_peak_coords.pkl"
             )
 
-            print("Aggregating and deduplicate anchor points...")
-            global_anchor_points_set = set()
-            for anchor_points_list in anchor_points_lists:
-                global_anchor_points_set.update(tuple(anchor_point) for anchor_point in anchor_points_list)
+            if os.path.exists(global_peak_coords_path):
+                print(f"Loading existing global peak coords from {global_peak_coords_path}")
+                with open(global_peak_coords_path, 'rb') as f:
+                    global_peak_coords = pickle.load(f)
+            else:
+                print("Calculating global peak coords for  patching...")
+                peak_coords_lists = parallel_get_peak_coords(
+                    binned_file_paths=binned_file_paths,
+                    patch_params=args.patch_params,
+                    workers=args.num_workers
+                )
 
-            global_anchor_points = np.array(list(global_anchor_points_set))
-            print(f"Saving global anchor points to {global_anchor_points_path}")
-            with open(global_anchor_points_path, 'wb') as f:
-                pickle.dump(global_anchor_points, f)
+                print("Aggregating peak coords...")
+                aggregate_peak_coords = np.vstack(peak_coords_lists)
+                global_peak_coords = filter_coords_by_dbscan(
+                    coords=aggregate_peak_coords,
+                    eps=args.patch_params.get('min_peak_distance', 20),
+                    min_samples=args.patch_params.get('dbscan_min_samples', 1)
+                )
 
-            print(f"Total unique global anchor points: {len(global_anchor_points)}")
+                print(f"Saving global peak_coords to {global_peak_coords_path}")
+                with open(global_peak_coords_path, 'wb') as f:
+                    pickle.dump(global_peak_coords, f)
 
-    parallel_generate_patches(
-        binned_file_paths=binned_file_paths,
-        prefix=args.patch_prefix,
-        patch_strategy=args.patch_strategy,
-        patch_params=args.patch_params,
-        global_anchor_points=global_anchor_points if args.patch_strategy == 'ics' else None,
-        workers=args.num_workers
-    )
+                print(f"Total unique global peak_coords: {len(global_peak_coords)}")
 
+            parallel_generate_patches(
+                binned_file_paths=binned_file_paths,
+                prefix=args.patch_prefix,
+                patch_strategy=args.patch_strategy,
+                patch_params=args.patch_params,
+                peak_coords=global_peak_coords,
+                workers=args.num_workers
+            )
+        else:
+            raise ValueError(f"Unknown patch generation strategy '{args.generate_strategy}' for DNMS patching.")
+    elif args.patch_strategy == 'grid':
+        parallel_generate_patches(
+            binned_file_paths=binned_file_paths,
+            prefix=args.patch_prefix,
+            patch_strategy=args.patch_strategy,
+            patch_params=args.patch_params,
+            peak_coords=None,
+            workers=args.num_workers
+        )
+    else:
+        raise ValueError(f"Unknown patch strategy '{args.patch_strategy}'")
     print('Patching Process Completed.')
