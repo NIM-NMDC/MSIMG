@@ -25,7 +25,7 @@ class Bottleneck(nn.Module):
             Layer consisting of conv->batchnorm->relu
         """
 
-        super(Bottleneck, self).__init__()
+        super().__init__()
 
         self.expansion = expansion
         self.in_channels = in_channels

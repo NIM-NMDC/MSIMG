@@ -1,3 +1,10 @@
+SPNS:
+  mz_min: 50.0
+  mz_max: 500.0
+  bin_size: 0.1
+  label_mapping:
+    Control: 0
+    SPNS: 1
 RCC:
   mz_min: 70.0
   mz_max: 1060.0
@@ -5,7 +12,7 @@ RCC:
   label_mapping:
     Control: 0
     RCC: 1
-ST003313:
+CD:
   mz_min: 65.0
   mz_max: 1010.0
   bin_size: 0.1

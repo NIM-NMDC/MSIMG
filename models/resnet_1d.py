@@ -25,7 +25,7 @@ class Bottleneck(nn.Module):
             Layer consisting of conv->batchnorm->relu
         """
 
-        super(Bottleneck, self).__init__()
+        super().__init__()
 
         self.expansion = expansion
         self.in_channels = in_channels
@@ -257,11 +257,10 @@ def build_resnet_1d(args):
         'resnet152': ([64, 128, 256, 512], [3, 8, 36, 3], 4, True)
     }
 
-
     # ResNet50 -> resnet50
     match = re.match(r'([A-Za-z_]*)ResNet(\d+)', args.model_name, re.IGNORECASE)
     if match:
-        base_model_key = args.model_name.lower()
+        base_model_key = f"resnet{match.group(2)}"
     else:
         raise ValueError(f"Invalid model name: {args.model_name}")
 
@@ -294,6 +293,5 @@ if __name__ == '__main__':
     print(model)
 
     x = torch.randn(1, args.spectrum_dim)
-
     output = model(x)
     print(output)

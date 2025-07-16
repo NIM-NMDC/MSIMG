@@ -5,14 +5,16 @@ from torch.utils.data import DataLoader
 
 import os
 import math
+import yaml
 import numpy as np
 import pandas as pd
 import argparse
 from datetime import datetime
 from sklearn.model_selection import StratifiedKFold
-from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from xgboost import XGBClassifier
 from sklearn.utils.class_weight import compute_class_weight
 
 from utils.file_utils import get_file_paths_grouped_by_class
@@ -20,13 +22,12 @@ from utils.split_utils import split_dataset_files_by_class_stratified
 from utils.data_loader import load_ms_dataset
 from datasets.datasets import MSDataset
 from models.resnet_1d import build_resnet_1d
+from models.densenet_1d import build_densenet_1d
+from models.efficientnet_1d import build_efficientnet_1d
 from callbacks.early_stopping import EarlyStopping
 from utils.train_utils import train, test
 from utils.ml_train_utils import train_test_ml
 from utils.metrics import calculate_bootstrap_ci
-
-
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
 
 
 def set_seeds(seed):
@@ -40,6 +41,30 @@ def set_seeds(seed):
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+
+def load_params_from_yaml(file_path, key=None):
+    """
+    Load parameters from a YAML file.
+
+    :param file_path: Path to the YAML file.
+    :return: Dictionary containing the parameters.
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"YAML file {file_path} does not exist.")
+
+    with open(file_path, 'r') as file:
+        params = yaml.safe_load(file)
+
+    if not isinstance(params, dict):
+        raise ValueError("YAML file must contain a dictionary of parameters.")
+
+    if key:
+        if key not in params:
+            raise KeyError(f"Key '{key}' not found in the YAML file.")
+        return params.get(key)
+    else:
+        return params
 
 
 def _create_dataset(X, y, transform=False):
@@ -84,29 +109,28 @@ def run_experiment(args):
             _create_dataset(X=X_train_fold, y=y_train_fold, transform=True),
             batch_size=args.batch_size,
             shuffle=True,
-            num_workers=args.num_workers
         )
         valid_loader = DataLoader(
             _create_dataset(X=X_valid_fold, y=y_valid_fold, transform=True),
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=args.num_workers
         )
         test_loader = DataLoader(
             _create_dataset(X=X_test, y=y_test, transform=True),
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=args.num_workers
         )
 
         model = None
-        if args.model_name in ['RF', 'SVM', 'LDA']:
-            if args.model_name == 'SVM':
-                model = SVC(kernel='rbf', probability=True, random_state=args.random_seed)
-            elif args.model_name == 'RF' or args.model_name == 'RandomForest':
+        if args.model_name in ['RF', 'SVM', 'LDA', 'XGBoost']:
+            if args.model_name == 'RF' or args.model_name == 'RandomForest':
                 model = RandomForestClassifier(random_state=args.random_seed)
+            elif args.model_name == 'SVM':
+                model = SVC(kernel='rbf', probability=True, random_state=args.random_seed)
             elif args.model_name == 'LDA':
                 model = LinearDiscriminantAnalysis()
+            elif args.model_name == 'XGBoost':
+                model = XGBClassifier(random_state=args.random_seed)
             else:
                 raise ValueError(f'Unknown model: {args.model_name}')
 
@@ -122,8 +146,12 @@ def run_experiment(args):
         else:
             if 'ResNet' in args.model_name:
                 model = build_resnet_1d(args)
+            elif 'DenseNet' in args.model_name:
+                model = build_densenet_1d(args)
+            elif 'EfficientNet' in args.model_name:
+                model = build_efficientnet_1d(args)
 
-            if args.use_multi_gpu and torch.cuda.device_count() > 1:
+            if args.multi_gpu and torch.cuda.device_count() > 1:
                 print(f'Using {torch.cuda.device_count()} GPUs for training.')
                 print("DataParallel typically expects model on primary GPU (cuda:0). Moving model to cuda:0 before DataParallel.")
                 model = model.to(args.device)
@@ -138,7 +166,7 @@ def run_experiment(args):
             optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-32)
 
-            if args.use_early_stopping:
+            if args.early_stopping:
                 early_stopping = EarlyStopping(patience=args.patience)
             else:
                 early_stopping = None
@@ -211,11 +239,6 @@ def main():
     parser.add_argument('--save_dir', type=str, default='checkpoints', help='Directory to save checkpoints')
     parser.add_argument('--model_name', type=str, default='ResNet50', help='Model name')
     parser.add_argument('--dataset_name', type=str, required=True, help='List of datasets to use (e.g. ST000923-C8-pos ST000923-C18-neg)')
-    parser.add_argument('--label_maps', nargs='+', help='List of label maps to use (e.g. HC=0 CD=1 UC=2)')
-    # binning
-    parser.add_argument('--mz_min', type=float, help='Minimum m/z value for binning')
-    parser.add_argument('--mz_max', type=float, help='Maximum m/z value for binning')
-    parser.add_argument('--bin_size', type=float, default=0.01, help='Bin size for m/z binning')
     # model
     parser.add_argument('--in_channels', type=int, default=1, help='Number of input channels')
     # parser.add_argument('--spectrum_dim', type=int, help='Spectrum dimension')
@@ -224,10 +247,10 @@ def main():
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
     parser.add_argument('--epochs', type=int, default=64, help='Number of epochs')
     parser.add_argument('--device', type=str, default=None, help='Device to use')
-    parser.add_argument('--num_workers', type=int, default=32, help='Number of workers for DataLoader')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
     parser.add_argument('--pretrained', action='store_true', help='Use pretrained model')
-    parser.add_argument('--use_multi_gpu', action='store_true', help='Use multiple GPUs')
-    parser.add_argument('--use_early_stopping', action='store_true', help='Use early stopping')
+    parser.add_argument('--multi_gpu', action='store_true', help='Use multiple GPUs')
+    parser.add_argument('--early_stopping', action='store_true', help='Use early stopping')
     parser.add_argument('--patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--random_seed', type=int, default=3407, help='Random seed for reproducibility')
 
@@ -236,7 +259,7 @@ def main():
     if args.device is None:
         args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if args.use_multi_gpu:
+    if args.multi_gpu:
         args.device = torch.device("cuda:0")
 
     # Set save directory
@@ -245,37 +268,21 @@ def main():
         os.makedirs(save_dir)
     args.save_dir = save_dir
 
-    dataset_parent_dir = 'datasets/MS-Quantitative-Table'
     dataset_dict = {
-        'ST000923-C8-pos': f"{dataset_parent_dir}/ST000923-C8-pos",
-        # 'ST000923-C18-neg': f"{dataset_parent_dir}/ST000923-C18-neg",
-        # 'ST000923-HILIC-pos': f"{dataset_parent_dir}/ST000923-HILIC-pos",
-        # 'ST000923-HILIC-neg': f"{dataset_parent_dir}/ST000923-HILIC-neg",
-        # 'ST001000-C8-pos': f"{dataset_parent_dir}/ST001000-C8-pos",
-        # 'ST001000-C18-neg': f"{dataset_parent_dir}/ST001000-C18-neg",
-        # 'ST001000-HILIC-pos': f"{dataset_parent_dir}/ST001000-HILIC-pos",
-        # 'ST001000-HILIC-neg': f"{dataset_parent_dir}/ST001000-HILIC-neg",
-        # 'ST003161': f"{dataset_parent_dir}/ST003161",
-        'ST003313': f"{dataset_parent_dir}/ST003313",
-        # 'PXD010371': f"{dataset_parent_dir}/PXD010371",
-        # 'MSV000089237': f"{dataset_parent_dir}/MSV000089237",
+        'SPNS': f"datasets/SPNS/Quantitative Table",
+        'RCC': f"datasets/RCC/Positive/Quantitative Table",
+        'CD': f"datasets/CD/Quantitative Table"
     }
     dataset_dir = os.path.join(args.root_dir, dataset_dict[args.dataset_name])
     if not os.path.exists(dataset_dir):
         raise FileNotFoundError(f"Dataset directory {dataset_dir} does not exist.")
     args.dataset_dir = dataset_dir
 
-    label_mapping = {}
-    if args.label_maps:
-        for pair in args.label_maps:
-            label, value = pair.split('=')
-            if value.isdigit():
-                label_mapping[label] = int(value)
-            else:
-                raise ValueError(f"Invalid label mapping: {pair}. Value must be an integer.")
-    else:
-        label_mapping = {'HC': 0, 'CD': 1, 'UC': 2}
-
+    dataset_params = load_params_from_yaml('../configs/dataset_config.yaml', key=args.dataset_name)
+    args.mz_min = dataset_params.get('mz_min')
+    args.mz_max = dataset_params.get('mz_max')
+    args.bin_size = dataset_params.get('bin_size')
+    label_mapping = dataset_params.get('label_mapping')
     args.label_mapping = label_mapping
     args.num_classes = len(label_mapping)
     args.spectrum_dim = math.ceil((args.mz_max - args.mz_min) / args.bin_size)

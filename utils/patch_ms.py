@@ -381,8 +381,9 @@ def process_patching(args, binned_dataset_dir, binned_file_paths):
                 print(f"Loading existing global peak coords from {global_peak_coords_path}")
                 with open(global_peak_coords_path, 'rb') as f:
                     global_peak_coords = pickle.load(f)
+                print(f"Total unique global peak_coords loaded: {len(global_peak_coords)}")
             else:
-                print("Calculating global peak coords for  patching...")
+                print("Calculating global peak coords for patching...")
                 peak_coords_lists = parallel_get_peak_coords(
                     binned_file_paths=binned_file_paths,
                     patch_params=args.patch_params,
@@ -394,8 +395,9 @@ def process_patching(args, binned_dataset_dir, binned_file_paths):
                 global_peak_coords = filter_coords_by_dbscan(
                     coords=aggregate_peak_coords,
                     eps=args.patch_params.get('min_peak_distance', 20),
-                    min_samples=args.patch_params.get('dbscan_min_samples', 1)
+                    min_samples=args.patch_params.get('min_samples', 1)
                 )
+                print(f"Total unique global peak_coords after DBSCAN filtering: {len(global_peak_coords)}")
 
                 print(f"Saving global peak_coords to {global_peak_coords_path}")
                 with open(global_peak_coords_path, 'wb') as f:
