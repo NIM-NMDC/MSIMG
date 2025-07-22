@@ -36,18 +36,16 @@ class MSIMGDataset(Dataset):
     """
     Mass Spectrometry 2D Image Dataset.
     """
-    def __init__(self, patches_list, positions_list, padding_mask_list, labels, return_positions=False, transform=None):
+    def __init__(self, patches_list, positions_list, labels, return_positions=False, transform=None):
         """
         :param patches_list: List of patches (numpy arrays).
         :param positions_list: List of positions (numpy arrays).
-        :param padding_mask_list: List of padding masks (numpy arrays).
         :param labels: List of labels (numpy arrays).
         :param return_positions: If True, return positions along with patches and labels.
         :param transform: Optional transform to be applied on the patches.
         """
         self.patches_list = patches_list
         self.positions_list = positions_list
-        self.padding_mask_list = padding_mask_list
         self.labels = labels
         self.return_positions = return_positions
         self.transform = transform
@@ -66,10 +64,8 @@ class MSIMGDataset(Dataset):
 
         if self.return_positions:
             positions = self.positions_list[idx]
-            padding_mask = self.padding_mask_list[idx]
             return patches, \
                    torch.tensor(positions, dtype=torch.float32), \
-                   torch.tensor(padding_mask, dtype=torch.bool), \
                    label
         else:
             return patches, \

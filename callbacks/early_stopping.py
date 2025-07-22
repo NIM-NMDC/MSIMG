@@ -22,7 +22,7 @@ class EarlyStopping:
         self.counter = 0
         self.early_stop = False
         self.best_valid_loss = None
-        self.valid_loss_min = np.Inf
+        self.valid_loss_min = np.inf
         self.delta = delta
 
     def __call__(self, valid_loss, model, save_model_dir=None, save_model_name='checkpoint.pth'):

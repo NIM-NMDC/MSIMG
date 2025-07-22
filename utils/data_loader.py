@@ -59,12 +59,10 @@ def load_ms_img_dataset(dataset, label_mapping):
         patched_data = np.load(file_path)
         patches = patched_data['patches']
         positions = patched_data['positions']
-        padding_mask = patched_data['padding_mask']
         patches_list.append(patches)
         positions_list.append(positions)
-        padding_mask_list.append(padding_mask)
         labels.append(label_mapping[class_name])
-    return np.array(patches_list), np.array(positions_list), np.array(padding_mask_list), np.array(labels)
+    return np.array(patches_list), np.array(positions_list), np.array(labels)
 
 
 

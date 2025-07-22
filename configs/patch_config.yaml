@@ -1,15 +1,11 @@
 # Patch Strategy
-grid:  # Grid Patching
+GP:  # Grid Patching
   patch_height: 224
   patch_width: 224
   overlap_row: 0
   overlap_col: 0
-dnms:  # Density Map with Non-Maximum Suppression
+DAPS:  # Density-Aware Peaks Selection
   patch_height: 224
   patch_width: 224
-  window_size: 224
-  intensity_threshold: 0.1
-  num_patches: 256
-  min_density_threshold: 50
-  min_peak_distance: 100
+  min_peaks_in_patch: 5
   padding_value: 0.0

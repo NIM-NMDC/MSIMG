@@ -109,37 +109,49 @@ def load_pretrained_for_finetune(model: nn.Module, pretrained_model_path: str, e
     return model
 
 
-def _update_file_path(file_instance: dict, prefix: str) -> dict:
+def _update_file_path(file_instance: dict, prefix: str = None, new_dir: str = None, suffix: str = None) -> dict:
     """
     Update the file path by replacing the prefix with the new prefix.
     Example: 'dataset/old_prefix/class/file.npz' to 'dataset/new_prefix/class/file.npz'.
 
     :param file_instance: Dictionary containing the file information.
-    :param prefix: New prefix to replace the original prefix.
+    :param prefix: Optional prefix to be added to the file path.
+    :param new_dir: Optional new directory to be used instead of the current one.
+    :param suffix: Optional suffix to be replaced in the file path.
     :return: Updated file path.
     """
     if 'file_path' not in file_instance:
         raise KeyError("The input dictionary must contain the 'file_path' key.")
-    original_file_path = file_instance['file_path']
-    p = Path(original_file_path)
-    need_to_change_dir = p.parent.parent
-    base_dir = need_to_change_dir.parent
-    original_dir_name = need_to_change_dir.name
-    new_dir_name = f"{prefix}_{original_dir_name}"
-    remaining_path = p.relative_to(need_to_change_dir)
-    new_path = base_dir / new_dir_name / remaining_path
-    new_path = str(new_path)
+
+    if prefix and new_dir:
+        raise KeyError("The 'new_dir' and 'prefix' are mutually exclusive.")
+
+    p = Path(file_instance['file_path'])
+
+    dir_to_modify = p.parent.parent
+    target_dir_name = None
+    if prefix:
+        target_dir_name = f"{prefix}_{dir_to_modify.name}"
+    elif new_dir:
+        target_dir_name = new_dir
+
+    target_filename = p.name
+    if suffix:
+        target_filename = p.stem + suffix
+
+    base_dir = dir_to_modify.parent
+    class_dir = p.parent.name
+    new_path = base_dir / target_dir_name / class_dir / target_filename
 
     updated_file_instance = file_instance.copy()
-    updated_file_instance['file_path'] = new_path
+    updated_file_instance['file_path'] = str(new_path)
     return updated_file_instance
 
 
-def _create_dataset(patches_list, positions_list, padding_mask_list, labels, return_positions, transform=None):
+def _create_dataset(patches_list, positions_list, labels, return_positions, transform=None):
     return MSIMGDataset(
         patches_list=patches_list,
         positions_list=positions_list,
-        padding_mask_list=padding_mask_list,
         labels=labels,
         return_positions=return_positions,
         transform=transform
@@ -149,25 +161,31 @@ def _create_dataset(patches_list, positions_list, padding_mask_list, labels, ret
 def run_experiment(args):
     set_seeds(args.random_seed)
     print(f"Dataset directory: {args.dataset_dir}")
-    file_paths_by_class = get_file_paths_grouped_by_class(base_dir=args.dataset_dir, suffix='.npz')
+    binned_dataset_dir = os.path.join(args.dataset_dir, args.bin_prefix)
+    binned_file_paths_by_class = get_file_paths_grouped_by_class(base_dir=binned_dataset_dir, suffix='.npz')
     train_set, test_set = split_dataset_files_by_class_stratified(
-        file_paths_by_class=file_paths_by_class,
+        file_paths_by_class=binned_file_paths_by_class,
         train_size=0.8,
         test_size=0.2,
         random_seed=args.random_seed
     )
-
-    patched_train_set = [_update_file_path(file_instance, args.patch_prefix) for file_instance in train_set]
-    patched_test_set = [_update_file_path(file_instance, args.patch_prefix) for file_instance in test_set]
+    peak_list_train_set = [_update_file_path(file_instance, new_dir='PEAK_LIST', suffix='_peaks.csv') for file_instance in train_set]
+    patched_train_set = [_update_file_path(file_instance, prefix=args.patch_prefix) for file_instance in train_set]
+    patched_test_set = [_update_file_path(file_instance, prefix=args.patch_prefix) for file_instance in test_set]
     is_patched_files_exist = all(Path(file_instance['file_path']).exists() for file_instance in (patched_train_set + patched_test_set))
 
     if is_patched_files_exist:
         print("Skipping patching processing steps.")
     else:
         print('Processing Patching...')
-        binned_dataset_dir = args.dataset_dir
-        process_patching(args, binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in train_set])
-        process_patching(args, binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in test_set])
+        process_patching(
+            args, peak_list_file_paths=[file_instance['file_path'] for file_instance in peak_list_train_set],
+            binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in train_set]
+        )
+        process_patching(
+            args, peak_list_file_paths=[file_instance['file_path'] for file_instance in peak_list_train_set],
+            binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in test_set]
+        )
 
     selected_train_set = [_update_file_path(file_instance, args.select_prefix) for file_instance in patched_train_set]
     selected_test_set = [_update_file_path(file_instance, args.select_prefix) for file_instance in patched_test_set]
@@ -177,17 +195,18 @@ def run_experiment(args):
         print("Skipping patch selection processing steps.")
     else:
         print('Processing Patch Selection...')
-        dir_name = os.path.dirname(args.dataset_dir)
-        base_name = os.path.basename(args.dataset_dir)
+        dir_name = os.path.dirname(binned_dataset_dir)
+        base_name = os.path.basename(binned_dataset_dir)
         patched_dataset_dir = os.path.join(dir_name, f"{args.patch_prefix}_{base_name}")
         process_patch_selection(args, patched_dataset_dir=patched_dataset_dir, patched_file_paths=[file_instance['file_path'] for file_instance in patched_train_set])
         process_patch_selection(args, patched_dataset_dir=patched_dataset_dir, patched_file_paths=[file_instance['file_path'] for file_instance in patched_test_set])
 
-    train_patches_list, train_positions_list, train_padding_mask_list, train_labels = load_ms_img_dataset(dataset=selected_train_set, label_mapping=args.label_mapping)
-    test_patches_list, test_positions_list, test_padding_mask_list, test_labels = load_ms_img_dataset(dataset=selected_test_set, label_mapping=args.label_mapping)
+    train_patches_list, train_positions_list, train_labels = load_ms_img_dataset(dataset=selected_train_set, label_mapping=args.label_mapping)
+    test_patches_list, test_positions_list, test_labels = load_ms_img_dataset(dataset=selected_test_set, label_mapping=args.label_mapping)
 
-    exp_dir_name = (f"{args.model_name}_{args.dataset_name}_{args.patch_strategy}_{args.generate_strategy}_patch_{args.patch_params.get('patch_height')}x{args.patch_params.get('patch_width')}_"
-                    f"num_classes_{args.num_classes}_in_channels_{args.top_k}_batch_size_{args.batch_size}")
+    exp_dir_name = (f"{args.model_name}_{args.dataset_name}_{args.patch_strategy}_"
+                    f"PATCH_{args.patch_params.get('patch_height')}x{args.patch_params.get('patch_width')}_"
+                    f"IN_CHANNELS_{args.num_patches}_NUM_CLASSES_{args.num_classes}_BATCH_SIZE_{args.batch_size}")
     print(exp_dir_name)
     exp_base_dir = os.path.join(args.save_dir, exp_dir_name)
 
@@ -199,12 +218,12 @@ def run_experiment(args):
 
     for fold_idx, (train_fold_indices, valid_fold_indices) in enumerate(skf.split(train_patches_list, train_labels)):
         print(f"{args.model_name} Fold {fold_idx + 1}/{args.k_folds}")
-        exp_model_name = f"kfold_{fold_idx + 1}_{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}"
+        exp_model_name = f"FOLD_{fold_idx + 1}_{args.model_name}_{args.dataset_name}_IN_CHANNELS_{args.num_patches}_NUM_CLASSES_{args.num_classes}"
 
-        train_fold_patches_list, train_fold_positions_list, train_fold_padding_mask_list, train_fold_labels = \
-            train_patches_list[train_fold_indices], train_positions_list[train_fold_indices], train_padding_mask_list[train_fold_indices], train_labels[train_fold_indices]
-        valid_fold_patches_list, valid_fold_positions_list, valid_fold_padding_mask_list, valid_fold_labels = \
-            train_patches_list[valid_fold_indices], train_positions_list[valid_fold_indices], train_padding_mask_list[valid_fold_indices], train_labels[valid_fold_indices]
+        train_fold_patches_list, train_fold_positions_list, train_fold_labels = \
+            train_patches_list[train_fold_indices], train_positions_list[train_fold_indices], train_labels[train_fold_indices]
+        valid_fold_patches_list, valid_fold_positions_list, valid_fold_labels = \
+            train_patches_list[valid_fold_indices], train_positions_list[valid_fold_indices], train_labels[valid_fold_indices]
         print(f'X_train.shape: {train_fold_patches_list.shape}, y_train.shape: {train_fold_labels.shape}')
         print(f'X_valid.shape: {valid_fold_patches_list.shape}, y_valid.shape: {valid_fold_labels.shape}')
         print(f'X_test.shape: {test_patches_list.shape}, y_test.shape: {test_labels.shape}')
@@ -259,12 +278,12 @@ def run_experiment(args):
             _create_dataset(
                 patches_list=train_fold_patches_list,
                 positions_list=train_fold_positions_list,
-                padding_mask_list=train_fold_padding_mask_list,
                 labels=train_fold_labels,
                 return_positions=return_positions,
                 transform=get_augmentation_pipeline()
             ),
             batch_size=args.batch_size,
+            num_workers=args.num_workers,
             shuffle=True,
             pin_memory=True
         )
@@ -272,12 +291,12 @@ def run_experiment(args):
             _create_dataset(
                 patches_list=valid_fold_patches_list,
                 positions_list=valid_fold_positions_list,
-                padding_mask_list=valid_fold_padding_mask_list,
                 labels=valid_fold_labels,
                 return_positions=return_positions,
                 transform=None
             ),
             batch_size=args.batch_size,
+            num_workers=args.num_workers,
             shuffle=False,
             pin_memory=True
         )
@@ -285,12 +304,12 @@ def run_experiment(args):
             _create_dataset(
                 patches_list=test_patches_list,
                 positions_list=test_positions_list,
-                padding_mask_list=test_padding_mask_list,
                 labels=test_labels,
                 return_positions=return_positions,
                 transform=None
             ),
             batch_size=args.batch_size,
+            num_workers=args.num_workers,
             shuffle=False,
             pin_memory=True
         )
@@ -351,8 +370,8 @@ def run_experiment(args):
     print(summary_stats_df)
 
     time_stamp = datetime.now().strftime('%Y%m%d%H%M%S')
-    fold_test_metrics_csv_path = os.path.join(exp_base_dir, f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}_kfold_tested_on_holdout_metrics_{time_stamp}.csv")
-    summary_stats_csv_path = os.path.join(exp_base_dir, f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.top_k}_kfold_tested_on_holdout_summary_stats_{time_stamp}.csv")
+    fold_test_metrics_csv_path = os.path.join(exp_base_dir, f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.num_patches}_kfold_tested_on_holdout_metrics_{time_stamp}.csv")
+    summary_stats_csv_path = os.path.join(exp_base_dir, f"{args.model_name}_{args.dataset_name}_num_classes_{args.num_classes}_in_channels_{args.num_patches}_kfold_tested_on_holdout_summary_stats_{time_stamp}.csv")
     fold_test_metrics_df.to_csv(fold_test_metrics_csv_path, index=False)
     summary_stats_df.to_csv(summary_stats_csv_path, index=False)
 
@@ -364,10 +383,9 @@ def main():
     parser.add_argument('--model_name', type=str, default='ResNet50', help='Model name')
     parser.add_argument('--dataset_name', type=str, help='Dataset to use')
 
-    parser.add_argument('--patch_strategy', type=str, required=True, choices=['grid', 'dnms'], help='Strategy to generate patches (e.g., grid, dnms)')
-    parser.add_argument('--generate_strategy', type=str, required=True, choices=['per_file', 'global'], help='Strategy to build multi-channel image from patches (e.g., pre_file, global)')
-    parser.add_argument('--score_strategy', type=str, default='entropy', choices=['entropy', 'mean'], help='Strategy to calculate patch scores (e.g. Entropy: 1D image entropy, Mean: mean intensity, Random: random selection)')
-    parser.add_argument('--top_k', type=int, default=256, help='Number of patches to be selected')
+    parser.add_argument('--patch_strategy', type=str, required=True, choices=['GP', 'DAPS'], help='Strategy to generate patches')
+    parser.add_argument('--score_strategy', type=str, default='Entropy', choices=['Entropy', 'Mean'], help='Strategy to calculate patch scores (e.g. Entropy: 1D image entropy, Mean: mean intensity)')
+    parser.add_argument('--num_patches', type=int, default=256, help='Number of patches to be selected')
 
     parser.add_argument('--k_folds', type=int, default=6, help='Number of patches to be selected')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
@@ -395,39 +413,40 @@ def main():
         os.makedirs(save_dir)
     args.save_dir = save_dir
 
-    dataset_params = load_params_from_yaml('../configs/dataset_config.yaml', key=args.dataset_name)
-    if dataset_params is None:
+    args.dataset_params = load_params_from_yaml('../configs/dataset_config.yaml', key=args.dataset_name)
+    if args.dataset_params is None:
         raise ValueError(f"Dataset parameters for '{args.dataset_name}' not found in the YAML file.")
-    args.bin_prefix = f"mz_{dataset_params.get('mz_min')}-{dataset_params.get('mz_max')}_bin_size_{dataset_params.get('bin_size')}"
+    args.bin_prefix = f"MZ_{args.dataset_params.get('mz_min')}-{args.dataset_params.get('mz_max')}_BIN_SIZE_{args.dataset_params.get('bin_size')}"
 
     patch_params = load_params_from_yaml('../configs/patch_config.yaml', key=args.patch_strategy)
     args.patch_params = patch_params
     if patch_params is None:
         raise ValueError(f"Patch parameters for strategy '{args.patch_strategy}' not found in the YAML file.")
-    if args.patch_strategy == 'grid':
-        args.patch_prefix = f"{args.patch_strategy}_{args.generate_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_overlap_{patch_params.get('overlap_row')}x{patch_params.get('overlap_col')}"
-    elif args.patch_strategy == 'dnms':
-        args.patch_prefix = (f"{args.patch_strategy}_{args.generate_strategy}_patch_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_"
-                             f"intensity_thr_{patch_params.get('intensity_threshold')}_min_density_thr_{patch_params.get('min_density_threshold')}_min_peak_dist_{patch_params.get('min_peak_distance')}")
+    if args.patch_strategy == 'GP':
+        args.patch_prefix = (f"{args.patch_strategy}_PATCH_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_"
+                             f"OVERLAP_{patch_params.get('overlap_row')}x{patch_params.get('overlap_col')}")
+    elif args.patch_strategy == 'DAPS':
+        args.patch_prefix = (f"{args.patch_strategy}_PATCH_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_"
+                             f"MIN_PKS_{args.patch_params.get('min_peaks_in_patch')}")
     else:
-        raise ValueError(f"Invalid patch strategy: {args.patch_strategy}. Supported strategies are 'grid' and 'dnms'.")
+        raise ValueError(f"Invalid patch strategy: {args.patch_strategy}.")
 
-    args.select_prefix = f'{args.score_strategy}_top_{args.top_k}'
+    args.select_prefix = f'{args.score_strategy}_{args.num_patches}'
 
     dataset_dict = {
-        'SPNS': f"datasets/SPNS/{args.bin_prefix}",
-        'RCC': f"datasets/RCC/Positive/{args.bin_prefix}",
-        'CD': f"datasets/CD/{args.bin_prefix}",
+        'SPNS': f"datasets/SPNS/",
+        'RCC': f"datasets/RCC/Positive/",
+        'CD': f"datasets/CD/",
     }
     dataset_dir = os.path.join(args.root_dir, dataset_dict[args.dataset_name])
     if not os.path.exists(dataset_dir):
         raise FileNotFoundError(f"Dataset directory {dataset_dir} does not exist.")
     args.dataset_dir = dataset_dir
 
-    label_mapping = dataset_params.get('label_mapping')
+    label_mapping = args.dataset_params.get('label_mapping')
     args.label_mapping = label_mapping
     args.num_classes = len(label_mapping)
-    args.in_channels = args.top_k
+    args.in_channels = args.num_patches
 
     if args.pretrained:
         args.pretrained_model_path_dict = load_params_from_yaml('../configs/pretrained_weights_config.yaml')

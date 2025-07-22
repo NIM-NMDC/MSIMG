@@ -113,65 +113,52 @@ def process_patch_selection(args, patched_dataset_dir, patched_file_paths):
     """
     # Selecting Top K Patches
     print('Selecting Top K Patches...')
-    if args.generate_strategy == 'per_file':
-        for patched_file_path in tqdm(patched_file_paths, desc="Selecting Top K Patches per file"):
-            scores = calculate_patches_scores(
-                patched_file_path=patched_file_path,
-                score_strategy=args.score_strategy
-            )
-            sorted_indices = np.argsort(scores)[::-1]
-            select_top_k_patches(
-                patched_file_path=patched_file_path,
-                prefix=args.select_prefix,
-                sorted_indices=sorted_indices,
-                top_k=args.top_k
-            )
-    elif args.generate_strategy == 'global':
-        print(f'Generating global sorted indices using {args.score_strategy} scores...')
-        if args.patch_strategy == 'dnms':
-            global_sorted_indices_file_path = os.path.join(
-                patched_dataset_dir,
-                f"{args.patch_strategy}_intensity_threshold_{args.patch_params.get('intensity_threshold')}_"
-                f"min_density_threshold_{args.patch_params.get('min_density_threshold')}_global_{args.score_strategy}_sorted_indices.pkl"
-            )
-        elif args.patch_strategy == 'grid':
-            global_sorted_indices_file_path = os.path.join(
-                patched_dataset_dir,
-                f"{args.patch_strategy}_global_{args.score_strategy}_sorted_indices.pkl"
-            )
-        else:
-            raise ValueError(f"Unknown patch strategy '{args.patch_strategy}'")
-
-        if os.path.exists(global_sorted_indices_file_path):
-            print(f"Loading existing global sorted indices from {global_sorted_indices_file_path}")
-            with open(global_sorted_indices_file_path, 'rb') as f:
-                global_sorted_indices = pickle.load(f)
-        else:
-            print(f"Generate global average indices from {len(patched_file_paths)} files...")
-            print('Calculating Scores for patches...')
-            scores_list = parallel_calculate_patches_scores(
-                patched_file_paths=patched_file_paths,
-                score_strategy=args.score_strategy,
-                workers=args.num_workers
-            )
-
-            print(f'Calculating global average {args.score_strategy} scores for {len(patched_file_paths)} files...')
-            avg_scores = calculate_average_scores(scores_list=scores_list)
-            global_sorted_indices = np.argsort(avg_scores)[::-1]
-
-            print(f"Saving global average {args.score_strategy} sorted indices to {global_sorted_indices_file_path}")
-            with open(global_sorted_indices_file_path, 'wb') as f:
-                pickle.dump(global_sorted_indices, f)
-
-        print(f"Selecting Top K Patches for {len(patched_file_paths)} files...")
-        parallel_select_top_k_patches(
-            patched_file_paths=patched_file_paths,
-            prefix=args.select_prefix,
-            sorted_indices=global_sorted_indices,
-            top_k=args.top_k,
-            workers=args.num_workers,
+    print(f'Generating global sorted indices using {args.score_strategy} scores...')
+    if args.patch_strategy == 'GP':
+        global_sorted_indices_file_path = os.path.join(
+            patched_dataset_dir,
+            f"{args.patch_strategy}_PATCH_{args.patch_params.get('patch_height')}x{args.patch_params.get('patch_width')}_"
+            f"OVERLAP_{args.patch_params.get('overlap_row')}x{args.patch_params.get('overlap_col')}_"
+            f"GLOBAL_{args.score_strategy}_INDICES.pkl"
+        )
+    elif args.patch_strategy == 'DAPS':
+        global_sorted_indices_file_path = os.path.join(
+            patched_dataset_dir,
+            f"{args.patch_strategy}_PATCH_{args.patch_params.get('patch_height')}x{args.patch_params.get('patch_width')}_"
+            f"MIN_PKS_{args.patch_params.get('min_peaks_in_patch')}_BIN_SIZE_{args.dataset_params.get('bin_size')}_RT_SCAN_{args.dataset_params.get('rt_scan')}_"
+            f"Global_{args.score_strategy}_Indices.pkl"
         )
     else:
-        raise ValueError(f"Unknown patch selection strategy '{args.generate_strategy}'")
+        raise ValueError(f"Unknown patch strategy '{args.patch_strategy}'")
+
+    if os.path.exists(global_sorted_indices_file_path):
+        print(f"Loading existing global sorted indices from {global_sorted_indices_file_path}")
+        with open(global_sorted_indices_file_path, 'rb') as f:
+            global_sorted_indices = pickle.load(f)
+    else:
+        print(f"Generate global average indices from {len(patched_file_paths)} files...")
+        print('Calculating Scores for patches...')
+        scores_list = parallel_calculate_patches_scores(
+            patched_file_paths=patched_file_paths,
+            score_strategy=args.score_strategy,
+            workers=args.num_workers
+        )
+
+        print(f'Calculating global average {args.score_strategy} scores for {len(patched_file_paths)} files...')
+        avg_scores = calculate_average_scores(scores_list=scores_list)
+        global_sorted_indices = np.argsort(avg_scores)[::-1]
+
+        print(f"Saving global average {args.score_strategy} sorted indices to {global_sorted_indices_file_path}")
+        with open(global_sorted_indices_file_path, 'wb') as f:
+            pickle.dump(global_sorted_indices, f)
+
+    print(f"Selecting Top K Patches for {len(patched_file_paths)} files...")
+    parallel_select_top_k_patches(
+        patched_file_paths=patched_file_paths,
+        prefix=args.select_prefix,
+        sorted_indices=global_sorted_indices,
+        top_k=args.num_patches,
+        workers=args.num_workers,
+    )
 
     print('Top K Patches Selection Process Completed.')

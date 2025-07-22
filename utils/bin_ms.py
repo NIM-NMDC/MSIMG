@@ -5,9 +5,9 @@ import pandas as pd
 from tqdm import tqdm
 from scipy import sparse
 from pathlib import Path
+from pyteomics import mzml
 from functools import partial
 from multiprocessing import Pool
-from pyteomics import mzml, mzxml
 
 
 def _create_save_path(file_path, prefix):
@@ -80,27 +80,35 @@ def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
         if ms_file_path.endswith('.mzML'):
             reader = mzml.read(ms_file_path)
             ms_level_key = 'ms level'
-        elif ms_file_path.endswith('.mzXML'):
-            reader = mzxml.read(ms_file_path)
-            ms_level_key = 'msLevel'
         else:
             raise ValueError(f"Unsupported file format: {ms_file_path}")
 
-        pseudo_ms_image = []
+        ms_matrix = []
+        rt_list = []
         for spec in reader:
             if spec.get(ms_level_key, 0) == 1:
+                rt_value = None
+                scan_list = spec.get('scanList')
+                if scan_list:
+                    scan = scan_list.get('scan')
+                    if scan:
+                        rt_value = scan[0].get('scan start time')
+
+                if rt_value is None:
+                    continue
+
                 binned_spec = parse_spec(spec, mz_min, mz_max, bin_size)
-                pseudo_ms_image.append(binned_spec)
+                ms_matrix.append(binned_spec)
+                rt_list.append(rt_value)
 
-        # pseudo_ms_image = pd.DataFrame(pseudo_ms_image).T  # pseudo_ms_image: (scans, mz_bins) -> (mz_bins, scans)
-        pseudo_ms_image = pd.DataFrame(pseudo_ms_image)
-        pseudo_ms_image = pseudo_ms_image.to_numpy()  # pseudo_ms_image: (scans, mz_bins)
-        # print(f"shape: {pseudo_ms_image.shape}")
-
-        sparse_table = sparse.csr_matrix(pseudo_ms_image, dtype=np.float32)
-        sparse.save_npz(save_path, sparse_table)
-        del pseudo_ms_image
-        del reader
+        ms_matrix = pd.DataFrame(ms_matrix)
+        ms_matrix = ms_matrix.to_numpy()  # (rt_scans, mz_bins)
+        # print(f"ms_matrix.shape: {ms_matrix.shape}")
+        # print(f"rt_list.shape: {len(rt_list)}")
+        # print(f"rt_list: {rt_list}")
+        sparse_ms_matrix = sparse.csr_matrix(ms_matrix, dtype=np.float32)
+        np.savez_compressed(save_path, sparse_ms_matrix=sparse_ms_matrix, rt_list=rt_list)
+        del ms_matrix, reader
         return True
     except Exception as e:
         raise RuntimeError(f"Error processing {ms_file_path}: {e}")
@@ -108,7 +116,7 @@ def parse_ms(ms_file_path, prefix, mz_min, mz_max, bin_size):
 
 def parallel_parse_ms(ms_file_paths, prefix, mz_min, mz_max, bin_size, workers=4):
     """
-    Generate pseudo 2D MS images from raw MS data (.mzML, .mzXML).
+    Generate pseudo 2D MS images from raw MS data (.mzML).
 
     :param ms_file_paths: The list of ms file paths.
     :param prefix: Prefix for the save path pattern.
@@ -158,11 +166,13 @@ def process_binning(args, ms_file_paths):
 
 
 if __name__ == '__main__':
+    # ms_file_path = r"S:\msdata\ST001937\mzML\Benign SPNS\2JY8.mzML"
+    # parse_ms(ms_file_path=ms_file_path, mz_min=50.0, mz_max=500.0, bin_size=0.01, prefix='test_prefix')
     import argparse
     from utils.file_utils import get_file_paths
     parser = argparse.ArgumentParser(description='Dataset Process Workflow')
     parser.add_argument('--dataset_dir', type=str, required=True, help='Path to the dataset directory')
-    parser.add_argument('--suffix', type=str, default='mzML', help='File suffix to filter (e.g., .mzML, .mzXML)')
+    parser.add_argument('--suffix', type=str, default='.mzML', help='File suffix to filter (e.g., .mzML, .mzXML)')
     parser.add_argument('--mz_min', type=float, required=True, help='Minimum m/z value for binning')
     parser.add_argument('--mz_max', type=float, required=True, help='Maximum m/z value for binning')
     parser.add_argument('--bin_size', type=float, required=True, help='Bin size for m/z binning')
@@ -173,26 +183,6 @@ if __name__ == '__main__':
     if '.' not in args.suffix:
         args.suffix = '.' + args.suffix
 
-    args.bin_prefix = f'mz_{args.mz_min}-{args.mz_max}_bin_size_{args.bin_size}'
+    args.bin_prefix = f'MZ_{args.mz_min}-{args.mz_max}_BIN_SIZE_{args.bin_size}'
     ms_file_paths = get_file_paths(base_dir=args.dataset_dir, suffix=args.suffix)
     process_binning(args=args, ms_file_paths=ms_file_paths)
-
-#     import re
-#     import pandas as pd
-#     file_path = r"E:\msdata\ST000923\HMP2_C8-pos\C8p_rawData\Quantitative Table\CD\0024_XAV_iHMP2_LIP_SM-6CAJC_CD_peaks.csv"
-#     df = pd.read_csv(file_path)
-#     mz_column, intensity_column = None, None
-#     for column in df.columns:
-#         if re.search(r'\bm\/?z\b', column, re.IGNORECASE):
-#             mz_column = column
-#         elif re.search(r'peak height', column, re.IGNORECASE):
-#             intensity_column = column
-#     print(f'mz_column: {mz_column}, intensity_column: {intensity_column}')
-#
-#     if mz_column is None or intensity_column is None:
-#         raise ValueError(f"Could not find m/z or intensity columns in {file_path}")
-#     mz_array = df[mz_column].values
-#     intensity_array = df[intensity_column].values
-#     binned_spectrum = binning(mz_array, intensity_array, 200, 1100, 0.01)
-#     print(f"Binned spectrum shape: {binned_spectrum.shape}")
-#     print(f"Binned spectrum: {binned_spectrum[:20]}")  # Print first 10 bins for verification

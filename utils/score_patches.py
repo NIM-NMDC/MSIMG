@@ -37,7 +37,7 @@ def calculate_mean(image):
     return mean
 
 
-def calculate_patches_scores(patched_file_path, score_strategy='entropy'):
+def calculate_patches_scores(patched_file_path, score_strategy):
     try:
         if not (os.path.exists(patched_file_path) and os.path.getsize(patched_file_path) > 0):
             raise FileNotFoundError(f"File not found or empty: {patched_file_path}")
@@ -59,7 +59,7 @@ def calculate_patches_scores(patched_file_path, score_strategy='entropy'):
         raise RuntimeError(f"Error processing {patched_file_path}: {e}")
 
 
-def parallel_calculate_patches_scores(patched_file_paths, score_strategy='entropy', workers=4):
+def parallel_calculate_patches_scores(patched_file_paths, score_strategy, workers=4):
     """
     Calculate scores for patches in parallel and return the full sorted indices.
 
@@ -67,15 +67,12 @@ def parallel_calculate_patches_scores(patched_file_paths, score_strategy='entrop
     :param score_strategy: Strategy to calculate score (e.g. Entropy: 1D image entropy, Mean: mean intensity).
     :param workers: Number of worker processes to use.
     """
-    if score_strategy not in ['entropy', 'mean']:
-        raise ValueError('Invalid strategy. Choose either "entropy" or "mean".')
-
     scores_list = []
     print(f'Starting parallel calculation of {score_strategy} scores for {len(patched_file_paths)} files.')
     with Pool(processes=workers) as pool:
         worker = partial(
             calculate_patches_scores,
-            score_strategy=score_strategy,
+            score_strategy=score_strategy.lower(),
         )
 
         for scores in tqdm(
