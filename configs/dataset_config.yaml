@@ -11,7 +11,7 @@ SPNS:
 RCC:
   mz_min: 70.0
   mz_max: 1060.0
-  bin_size: 0.1
+  bin_size: 0.01
   start_rt: 0.00
   end_rt: 10.00
   rt_scan: 0.01

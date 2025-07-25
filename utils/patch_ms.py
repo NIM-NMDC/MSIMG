@@ -6,6 +6,7 @@ from tqdm import tqdm
 from pathlib import Path
 from functools import partial
 from multiprocessing import Pool
+from scipy import ndimage
 from scipy.spatial import cKDTree
 
 
@@ -48,20 +49,147 @@ def get_normalized_matrix(raw_matrix):
     return normalized_matrix
 
 
-def get_peaks(peak_list_file_paths):
-    peaks_df = []
-    for file_path in tqdm(peak_list_file_paths):
-        if not (os.path.exists(file_path) and os.path.isfile(file_path)):
-            raise ValueError(f"File {file_path} does not exist or is not a file.")
+def calculate_adaptive_threshold(matrix, percentile):
+    """
+    Calculate an adaptive threshold based on the given percentile of non-zero elements in the matrix.
 
-        df = pd.read_csv(file_path)
-        mz_col = [col for col in df.columns if 'm/z' in col][0]
-        rt_col = [col for col in df.columns if 'RT' in col][0]
-        temp_df = df[[mz_col, rt_col]].copy()
-        temp_df.columns = ['m/z', 'RT']
-        peaks_df.append(temp_df)
-    peaks_df = pd.concat(peaks_df, ignore_index=True)
-    return peaks_df
+    :param matrix: The matrix to analyze (2D array).
+    :param percentile: The percentile (0-100) to use for thresholding. For example, 95 means the threshold will be higher than 95% of the non-zero elements.
+    :return: The calculated threshold value as a float.
+    """
+    if not (0 <= percentile <= 100):
+        raise ValueError("Percentile must be between 0 and 100.")
+
+    non_zero_elements = matrix[matrix > 0]
+    if non_zero_elements.size == 0:
+        return 0.0
+
+    threshold = np.percentile(non_zero_elements, percentile)
+    return threshold
+
+
+def calculate_density_map(normalized_matrix, window_size, intensity_threshold):
+    """
+    Calculate a density map from a matrix.
+    The density at a pixel is the number of signal pixels (above intensity_threshold) within a window of 'window_size' centered at that pixel.
+
+    :param normalized_matrix: Normalized matrix.
+    :param window_size: Sliding window size in elements.
+    :param intensity_threshold: The threshold to consider an element as signal.
+    :return: A 2D array representing the density map.
+    """
+    signal_mask = (normalized_matrix > 0).astype(np.float32) if intensity_threshold < 0 else (normalized_matrix >= intensity_threshold).astype(np.float32)
+    # uniform_filter calculates the mean, so multiply by window area to get the sum (count)
+    window_area = window_size ** 2
+    density_map = ndimage.uniform_filter(signal_mask, size=window_size, mode='constant') * window_area
+    return density_map
+
+
+def non_maximum_suppression(density_map, num_patches, suppression_window_size, density_threshold):
+    """
+    Performs Non-Maximum Suppression on a density map to find the top N dense peaks.
+
+    :param density_map: 2D array where each value is the density score.
+    :param num_patches: The maximum number of patches (peaks) to find.
+    :param suppression_window_size: A tuple (height, width) of the area to suppress around a found peak. This should typically be the patch size.
+    :param density_threshold: The minimum density score for a peak to be considered.
+    :return: A numpy array of shape (N, 2) containing the (row, col) coordinates of the peaks.
+    """
+    H, W = suppression_window_size
+    h_half_floor = H // 2
+    w_half_floor = W // 2
+    h_half_ceil = H - h_half_floor
+    w_half_ceil = W - w_half_floor
+
+    temp_map = np.copy(density_map)
+    peaks = []
+
+    for _ in range(num_patches):
+        max_val = np.max(temp_map)
+
+        if max_val < density_threshold:
+            break
+
+        # find the coordinates of the peak
+        coords = np.unravel_index(np.argmax(temp_map), temp_map.shape)
+        peaks.append(coords)
+
+        # suppress the area around the peak
+        row_center, col_center = coords
+        row_start = max(0, row_center - h_half_floor)
+        row_end = min(temp_map.shape[0], row_center + h_half_ceil)
+        col_start = max(0, col_center - w_half_floor)
+        col_end = min(temp_map.shape[1], col_center + w_half_ceil)
+
+        temp_map[row_start:row_end, col_start:col_end] = 0
+    return np.array(peaks, dtype=int)
+
+
+# def get_peaks(peak_list_file_paths):
+#     peaks_df = []
+#     for file_path in tqdm(peak_list_file_paths):
+#         if not (os.path.exists(file_path) and os.path.isfile(file_path)):
+#             raise ValueError(f"File {file_path} does not exist or is not a file.")
+#
+#         df = pd.read_csv(file_path)
+#         mz_col = [col for col in df.columns if 'm/z' in col][0]
+#         rt_col = [col for col in df.columns if 'RT' in col][0]
+#         temp_df = df[[mz_col, rt_col]].copy()
+#         temp_df.columns = ['m/z', 'RT']
+#         peaks_df.append(temp_df)
+#     peaks_df = pd.concat(peaks_df, ignore_index=True)
+#     return peaks_df
+
+
+def get_peaks(binned_file_path, patch_params):
+    try:
+        if not os.path.exists(binned_file_path):
+            raise FileNotFoundError(f"File not found: {binned_file_path}")
+
+        binned_data = np.load(binned_file_path, allow_pickle=True)
+        sparse_ms_matrix = binned_data['sparse_ms_matrix'].item()
+        ms_matrix = sparse_ms_matrix.toarray()
+        normalized_ms_matrix = get_normalized_matrix(ms_matrix)
+        adaptive_intensity_threshold = calculate_adaptive_threshold(
+            matrix=normalized_ms_matrix,
+            percentile=patch_params.get('adaptive_intensity_percentile', 10)
+        )
+        density_map = calculate_density_map(
+            normalized_matrix=normalized_ms_matrix,
+            window_size=patch_params.get('window_size'),
+            intensity_threshold=adaptive_intensity_threshold
+        )
+        adaptive_density_threshold = calculate_adaptive_threshold(
+            matrix=density_map,
+            percentile=patch_params.get('adaptive_density_percentile', 90)
+        )
+        peaks = non_maximum_suppression(
+            density_map=density_map,
+            num_patches=patch_params.get('num_patches', 256),
+            suppression_window_size=(patch_params.get('patch_height'), patch_params.get('patch_width')),
+            density_threshold=adaptive_density_threshold
+        )
+        return peaks
+    except Exception as e:
+        raise RuntimeError(f"Error processing {binned_file_path}: {e}")
+
+
+def parallel_get_peaks(binned_file_paths, patch_params, workers=4):
+    print(f"Starting parallel peak detection for {len(binned_file_paths)} files...")
+    with Pool(processes=workers) as pool:
+        worker = partial(
+            get_peaks,
+            patch_params=patch_params
+        )
+
+        results = list(
+            tqdm(
+                pool.imap_unordered(worker, binned_file_paths),
+                total=len(binned_file_paths),
+                desc='Calculating peaks'
+            )
+        )
+        return results
 
 
 def greedy_density_peaks_selection(peaks, patch_height, patch_width, n_candidates=1000, min_peaks_in_patch=10):
@@ -109,25 +237,6 @@ def greedy_density_peaks_selection(peaks, patch_height, patch_width, n_candidate
         final_indices_in_ball = kdtree.query_ball_point(selected_peak, r=radius)
         available_mask[final_indices_in_ball] = False
     return np.array(selected_peaks, dtype=int)
-
-
-def get_patch_points(peaks, mz_min, bin_size, rt_list):
-    """
-    Convert peaks (m/z, rt) to matrix indices based on the given m/z and rt parameters.
-
-    :param peaks: Array of point coordinates as (num_peaks, 2) where each row is (m/z, rt).
-    :param mz_min: Minimum m/z value.
-    :param bin_size: Size of the m/z bin.
-    :param rt_list: List of retention times corresponding to the rows in the matrix.
-    :return: Array of matrix indices as (num_peaks, 2) where each row is (row_idx, col_idx).
-    """
-    mzs = peaks[:, 0]
-    col_indices = np.floor((mzs - mz_min) / bin_size).astype(int)
-    rt_kdtree = cKDTree(rt_list.reshape(-1, 1))
-    rts = peaks[:, 1]
-    _, row_indices = rt_kdtree.query(rts.reshape(-1, 1), k=1)
-    patch_points = np.stack((row_indices, col_indices), axis=1)
-    return patch_points
 
 
 def grid_patching(matrix, patch_height, patch_width, overlap_row, overlap_col):
@@ -219,7 +328,7 @@ def point_patching(matrix, patch_points, patch_height, patch_width, padding_valu
     return np.array(patches), np.array(positions)
 
 
-def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, dataset_params, peaks=None):
+def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, peaks=None):
     try:
         if not (os.path.exists(binned_file_path) and os.path.getsize(binned_file_path) > 0):
             raise FileNotFoundError(f"File not found or empty: {binned_file_path}")
@@ -232,7 +341,6 @@ def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, dat
         sparse_ms_matrix = binned_data['sparse_ms_matrix'].item()
         ms_matrix = sparse_ms_matrix.toarray()
         normalized_ms_matrix = get_normalized_matrix(ms_matrix)
-        rt_list = binned_data['rt_list']
 
         if patch_strategy == 'GP':
             patches, positions = grid_patching(
@@ -244,15 +352,9 @@ def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, dat
             )
         elif patch_strategy == 'DAPS':
             if peaks is not None:
-                patch_points = get_patch_points(
-                    peaks=peaks,
-                    mz_min=dataset_params.get('mz_min'),
-                    bin_size=dataset_params.get('bin_size'),
-                    rt_list=rt_list
-                )
                 patches, positions = point_patching(
                     matrix=normalized_ms_matrix,
-                    patch_points=patch_points,
+                    patch_points=peaks,
                     patch_height=patch_params.get('patch_height'),
                     patch_width=patch_params.get('patch_width'),
                     padding_value=patch_params.get('padding_value')
@@ -268,7 +370,7 @@ def generate_patches(binned_file_path, prefix, patch_strategy, patch_params, dat
         raise RuntimeError(f"Error processing {binned_file_path}: {e}")
 
 
-def parallel_generate_patches(binned_file_paths, prefix, patch_strategy, patch_params, dataset_params, peaks=None, workers=4):
+def parallel_generate_patches(binned_file_paths, prefix, patch_strategy, patch_params, peaks=None, workers=4):
     """
     Generate patches from pseudo MS images in parallel.
 
@@ -276,7 +378,6 @@ def parallel_generate_patches(binned_file_paths, prefix, patch_strategy, patch_p
     :param prefix: Prefix for the save path pattern.
     :param patch_strategy: Strategy to extract patches.
     :param patch_params: Dictionary containing parameters for patch generation.
-    :param dataset_params: Dictionary containing dataset parameters (e.g., mz_min, bin_size, rt_scan).
     :param peaks: Peaks for point patching, if applicable.
     :param workers: Number of worker processes to use.
     """
@@ -287,7 +388,6 @@ def parallel_generate_patches(binned_file_paths, prefix, patch_strategy, patch_p
             prefix=prefix,
             patch_strategy=patch_strategy,
             patch_params=patch_params,
-            dataset_params=dataset_params,
             peaks=peaks
         )
 
@@ -303,7 +403,7 @@ def parallel_generate_patches(binned_file_paths, prefix, patch_strategy, patch_p
     print(f"Patch generation completed. Success rate: {success_rate:.2%}")
 
 
-def process_patching(args, peak_list_file_paths, binned_dataset_dir, binned_file_paths):
+def process_patching(args, binned_dataset_dir, binned_file_paths):
     """
     Process the patching of binned MS files.
     """
@@ -315,15 +415,15 @@ def process_patching(args, peak_list_file_paths, binned_dataset_dir, binned_file
             prefix=args.patch_prefix,
             patch_strategy=args.patch_strategy,
             patch_params=args.patch_params,
-            dataset_params=args.dataset_params,
             peaks=None,
             workers=args.num_workers
         )
     elif args.patch_strategy == 'DAPS':
         selected_peaks_file_path = os.path.join(
             binned_dataset_dir,
-            f"PATCH_{args.patch_params.get('patch_height')}x{args.patch_params.get('patch_width')}_MIN_PKS_{args.patch_params.get('min_peaks_in_patch')}_"
-            f"RT_SCAN_{args.dataset_params.get('rt_scan')}_BIN_SIZE_{args.dataset_params.get('bin_size')}.pkl"
+            f"PATCH_{args.patch_params.get('patch_height')}x{args.patch_params.get('patch_width')}_"
+            f"WINDOW_{args.patch_params.get('window_size')}_INT_PER_{args.patch_params.get('intensity_percentile')}_"
+            f"DENS_PER_{args.patch_params.get('density_percentile')}_MIN_PKS_{args.patch_params.get('min_peaks_in_patch')}.pkl"
         )
 
         if os.path.exists(selected_peaks_file_path):
@@ -333,13 +433,14 @@ def process_patching(args, peak_list_file_paths, binned_dataset_dir, binned_file
             print(f"Total selected peaks loaded: {len(selected_peaks)}")
         else:
             print("Calculating selected peaks for patching...")
-            peaks = get_peaks(
-                peak_list_file_paths=peak_list_file_paths,
+            aggregated_peaks = parallel_get_peaks(
+                binned_file_paths=binned_file_paths,
+                patch_params=args.patch_params,
             )
             selected_peaks = greedy_density_peaks_selection(
-                peaks=peaks.to_numpy(),
-                patch_height=args.patch_params.get('patch_height') * args.dataset_params.get('rt_scan'),
-                patch_width=args.patch_params.get('patch_width') * args.dataset_params.get('bin_size'),
+                peaks=np.vstack(aggregated_peaks),
+                patch_height=args.patch_params.get('patch_height'),
+                patch_width=args.patch_params.get('patch_width'),
                 n_candidates=args.patch_params.get('n_candidates', 1000),
                 min_peaks_in_patch=args.patch_params.get('min_peaks_in_patch', 10)
             )
@@ -353,7 +454,6 @@ def process_patching(args, peak_list_file_paths, binned_dataset_dir, binned_file
             prefix=args.patch_prefix,
             patch_strategy=args.patch_strategy,
             patch_params=args.patch_params,
-            dataset_params=args.dataset_params,
             peaks=selected_peaks,
             workers=args.num_workers
         )

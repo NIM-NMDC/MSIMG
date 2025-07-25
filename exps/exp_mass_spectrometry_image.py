@@ -169,7 +169,7 @@ def run_experiment(args):
         test_size=0.2,
         random_seed=args.random_seed
     )
-    peak_list_train_set = [_update_file_path(file_instance, new_dir='PEAK_LIST', suffix='_peaks.csv') for file_instance in train_set]
+
     patched_train_set = [_update_file_path(file_instance, prefix=args.patch_prefix) for file_instance in train_set]
     patched_test_set = [_update_file_path(file_instance, prefix=args.patch_prefix) for file_instance in test_set]
     is_patched_files_exist = all(Path(file_instance['file_path']).exists() for file_instance in (patched_train_set + patched_test_set))
@@ -179,12 +179,10 @@ def run_experiment(args):
     else:
         print('Processing Patching...')
         process_patching(
-            args, peak_list_file_paths=[file_instance['file_path'] for file_instance in peak_list_train_set],
-            binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in train_set]
+            args, binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in train_set]
         )
         process_patching(
-            args, peak_list_file_paths=[file_instance['file_path'] for file_instance in peak_list_train_set],
-            binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in test_set]
+            args, binned_dataset_dir=binned_dataset_dir, binned_file_paths=[file_instance['file_path'] for file_instance in test_set]
         )
 
     selected_train_set = [_update_file_path(file_instance, args.select_prefix) for file_instance in patched_train_set]
@@ -427,7 +425,8 @@ def main():
                              f"OVERLAP_{patch_params.get('overlap_row')}x{patch_params.get('overlap_col')}")
     elif args.patch_strategy == 'DAPS':
         args.patch_prefix = (f"{args.patch_strategy}_PATCH_{patch_params.get('patch_height')}x{patch_params.get('patch_width')}_"
-                             f"MIN_PKS_{args.patch_params.get('min_peaks_in_patch')}")
+                             f"WINDOW_{args.patch_params.get('window_size')}_INT_PER_{args.patch_params.get('intensity_percentile')}_"
+                             f"DENS_PER_{args.patch_params.get('density_percentile')}_MIN_PKS_{args.patch_params.get('min_peaks_in_patch')}")
     else:
         raise ValueError(f"Invalid patch strategy: {args.patch_strategy}.")
 
