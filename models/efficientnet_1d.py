@@ -222,11 +222,9 @@ def build_efficientnet_1d(args):
 
 if __name__ == '__main__':
     args = {
-        'model_name': 'EfficientNetB0',
+        'model_name': 'DenseNet121',
         'in_channels': 1,
-        'spectrum_dim': 15000,
-        'embedding_channels': 256,
-        'embedding_dim': 1024,
+        'num_bins': 15000,
         'num_classes': 3
     }
     args = argparse.Namespace(**args)
@@ -236,7 +234,7 @@ if __name__ == '__main__':
     # print models structure
     print(model)
 
-    x = torch.randn(1, args.spectrum_dim)
+    x = torch.randn(1, args.num_bins)
     output = model(x)
     print(output)
 
